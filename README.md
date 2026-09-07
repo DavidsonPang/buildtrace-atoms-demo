@@ -113,3 +113,7 @@ npm run test:e2e
 - Serverless 实例内的次数与费用估算会随冷启动重置，因此必须与平台限流和账户额度配合。
 
 这些限制会保留为明确的原型边界，而不会被描述为生产级能力。
+
+## License
+
+[MIT](LICENSE) © 2026 Davidson
