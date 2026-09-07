@@ -1,8 +1,8 @@
 # BuildTrace 验证报告
 
 > 日期：2026-09-07
-> 范围：本地端到端纵向切片、DeepSeek V4 Flash Provider Spike、五场景评测与 Vercel 生产部署
-> 结论：本地核心生成链路通过；真实模型场景 4/5 成功，达到 PRD 的最低验收线；生产环境真实 Pipeline 与平台限流均已验证。
+> 范围：本地端到端纵向切片、DeepSeek V4 Flash Provider Spike、五场景评测、Vercel 生产部署，以及 Supabase 身份/持久化升级的本地验证
+> 结论：本地核心生成链路通过；真实模型场景 4/5 成功，达到 PRD 的最低验收线；原生产环境真实 Pipeline 与平台限流已验证。Supabase 升级已通过本地静态和自动测试，远程数据库与两账户隔离仍待配置后验证。
 
 ## 1. 验证口径
 
@@ -19,12 +19,12 @@
 | ------------------ | ---- | ----------------------------------------------------------------------- |
 | ESLint             | 通过 | `npm run lint`，0 error / 0 warning                                     |
 | TypeScript         | 通过 | `npm run typecheck`                                                     |
-| 单元测试           | 通过 | 5 个测试文件、17 个测试通过                                             |
+| 单元测试           | 通过 | 7 个测试文件、30 个测试通过                                             |
 | 生产构建           | 通过 | `npm run build`；主页和 `/api/preset` 为 Static，`/api/runs` 为 Dynamic |
 | Fake Provider E2E  | 通过 | Chromium 用户流程 4/4 通过                                              |
 | 真实产物浏览器回放 | 通过 | 10 个交互控件；输入改变后结果变化；父页面显示“已就绪 · 交互已验证”      |
 
-单元测试覆盖 Orchestrator 阶段顺序与取消、引导式暂停、局部重建、失败阶段续跑、请求快照校验、DeepSeek Responses API 请求契约、限流错误归一化、一次结构化修复、预算计数、HTML 安全策略、Preview 注入，以及本地快照的校验、损坏降级和版本上限。
+单元测试覆盖 Orchestrator 阶段顺序与取消、引导式暂停、局部重建、失败阶段续跑、请求快照校验、DeepSeek Responses API 请求契约、限流错误归一化、一次结构化修复、预算计数、HTML 安全策略、Preview 注入、本地快照的校验/迁移/账号分区/版本上限、服务端 Bearer Token 验证边界，以及 Supabase Migration 的 Grants、RLS Policy 和 HTML 大小约束。
 
 四条 Chromium 端到端流程分别验证：
 
@@ -136,15 +136,38 @@ exceeded action = rate_limit (HTTP 429)
 
 为避免额外模型费用，使用无法通过请求 Schema 的空 JSON 连续测试。四次响应依次为 `400、400、400、429`：前三次到达应用校验层，第四次由边缘限流拦截。规则状态为 Enabled，且已发布至生产配置。
 
-## 7. 已知限制与下一步
+## 7. Supabase 升级验证状态
+
+### 7.1 已自动验证
+
+- 未配置 Supabase 时保留 Fake Provider 本地模式，不误要求远程身份服务；
+- 配置 Supabase 后，缺少或无效 Bearer Token 的身份结果为未登录；有效 Token 的用户 ID 只取自服务端 `auth.getUser`；
+- LocalStorage v1 游客数据可迁移到 v2，用户缓存 Key 相互隔离；游客项目迁入账户时重建项目与版本 ID；
+- SQL Migration 对 `projects` 和 `project_versions` 启用 RLS、撤销匿名权限，并为 select/insert/update/delete 建立 Owner Policy；
+- Postgres 与运行时 Schema 都限制 HTML 大小；当前修改仍先写本地，云端错误有明确状态和重试入口。
+
+### 7.2 配置后必须补录的远程证据
+
+- 邮箱注册、确认、登录、刷新恢复会话和退出；
+- 账号 A 创建项目后跨浏览器恢复；账号 B 无法读取、修改或删除账号 A 的项目与版本；
+- 断网编辑保留在本地，恢复联网后重新读取云端并同步；
+- Vercel `/api/runs` 未登录返回 401，登录后完整 DeepSeek Pipeline 成功；
+- 浏览器 Network/Bundle 和 Git 历史中不存在 Provider Key 或 `service_role` Key。
+
+在以上证据完成前，不把 Supabase 升级描述为“已在线验收”。原第 6 节生产验证对应升级前基线。
+
+## 8. 已知限制与下一步
 
 - ROI 场景没有在 75 秒新上限下重复验证，保留为真实失败样本。
 - 最近一次成功产物会在新预览 Ready 后才写入版本；运行时错误会恢复旧预览，但没有覆盖所有浏览器兼容性故障。
-- 项目只在当前浏览器保存最近 3 个成功版本，没有账号、云端同步或多人协作。
+- Supabase 升级尚未完成远程数据库、邮件确认、两账户 RLS 与 Vercel 重部署验证。
+- 当前只恢复登录用户最近项目，没有多项目列表、共享、角色或多人协作。
+- 冲突策略依赖客户端 `savedAt`，不适合不可信时钟或多人并发编辑。
+- HTML 首版存入 Postgres，超过 150 KB 后仍需迁移 Supabase Storage。
 - 已完成项目可在刷新后恢复；未完成运行的流式连接和一键续跑元数据不会跨刷新恢复。
 - 引导模式只允许编辑 Product Brief；Technical Plan 目前只读。
 - 线上只执行了一次完整真实生成，不能据此推断长期可用性或所有提示词表现。
 - 没有把 Provider 用量暴露给客户端；费用应以 DeepSeek 控制台账单为最终依据。
 - 内存次数与费用计数不是分布式配额；当前 WAF 限制单 IP 频率，但不能替代用户级配额。
 
-核心 Agent Pipeline、差异化重建和本地恢复已完成；GitHub 公开仍受 D5 决策控制。
+核心 Agent Pipeline、差异化重建、本地恢复和 Supabase 代码边界已完成；远程 Supabase 集成完成后再更新生产结论。

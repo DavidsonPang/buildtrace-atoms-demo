@@ -3,6 +3,7 @@
 > 状态：D2、D3 已确认（2026-09-07）
 > 关联需求：[product-requirements.md](./product-requirements.md)  
 > 关键决策：[ADR-0001：生成沙箱化的自包含 HTML](./decisions/0001-sandboxed-self-contained-html.md)
+> 范围升级：[ADR-0002：Supabase 身份与本地优先云持久化](./decisions/0002-supabase-local-first-persistence.md)
 
 ## 1. 技术方案摘要
 
@@ -17,7 +18,8 @@ BuildTrace 采用 **本地优先的 Next.js 应用 + 服务端 Agent Orchestrato
 - Pipeline 固定为 Product → Architecture → Engineering → Validation；
 - 生成自包含 HTML，通过受限 `iframe srcDoc` 运行；
 - 使用确定性规则验证 HTML、安全策略、预览就绪和交互；
-- 使用带版本的浏览器本地存储保存项目；
+- 使用 Supabase Auth 保存身份与会话，Postgres 保存项目和最近三个成功版本；
+- 使用按用户隔离的版本化 LocalStorage 作为本地缓存和断网恢复层；
 - 使用 Vitest 测试契约、状态和安全逻辑，使用 Playwright 测试核心浏览器流程。
 
 这是经过主动约束的原型架构。它展示真实编排、失败恢复、安全边界和完整浏览器体验，但不假装支持任意代码仓库或生产级云应用。
@@ -39,15 +41,15 @@ BuildTrace 采用 **本地优先的 Next.js 应用 + 服务端 Agent Orchestrato
 - 生成结果是一份受大小限制的 HTML，CSS 和 JavaScript 均内联；
 - 生成应用不使用远程后端，也不动态安装依赖；
 - 服务端任务与一次请求生命周期绑定，不假设已有持久任务队列；
-- MVP 项目数据只保存在当前浏览器；
+- HTML 首版存入 Postgres，单份限制 150 KB，超过边界后迁移到 Supabase Storage；
 - 模型已在 D3 锁定为 `deepseek-v4-flash`，部署平台留到 D4 决定；
-- 公共访问无需登录，费用保护必须同时依赖应用限制与 Provider 硬预算。
+- 公共访问可匿名查看预置项目，实时生成需要登录；费用保护同时依赖用户身份、应用限制与 Provider 硬预算。
 
 ### 2.3 非目标
 
 - 运行生成的 Node.js、Python、Shell 或容器任务；
 - 支持任意包管理器或多文件构建；
-- 跨设备保存用户项目；
+- 团队空间、共享项目、角色权限和多人并发编辑；
 - 展示 Chain-of-Thought 或其他隐藏推理；
 - 声称 iframe 可以让任意生成代码绝对安全。
 
@@ -56,14 +58,17 @@ BuildTrace 采用 **本地优先的 Next.js 应用 + 服务端 Agent Orchestrato
 ```mermaid
 flowchart LR
     U[用户] --> W[React 工作台]
-    W -->|POST /api/runs<br/>NDJSON stream| R[Next.js Route Handler]
+    W -->|注册 / 登录 / 会话| A[Supabase Auth]
+    W -->|用户 JWT + RLS| D[(Supabase Postgres)]
+    W -->|版本化本地投影| S[LocalStorage]
+    W -->|Bearer JWT + POST /api/runs<br/>NDJSON stream| R[Next.js Route Handler]
+    R -->|getUser 验证 Token| A
     R --> G[请求保护层]
     G --> O[Agent Orchestrator]
     O --> P[Provider Adapter]
     P --> L[DeepSeek V4 Flash]
     O --> Z[Zod 契约校验]
     O --> V[确定性验证器]
-    W --> S[带版本的浏览器存储]
     W --> F[沙箱 Preview iframe]
     F -->|ready / error / interaction<br/>带作用域的 postMessage| W
 
@@ -91,7 +96,9 @@ flowchart LR
 | Provider Adapter        | 发起模型调用并统一结构化结果和错误             | 管理 UI 或项目状态                 |
 | Contract Validation     | 拒绝不合规请求、事件和模型产物                 | 判断主观产品质量                   |
 | Deterministic Validator | 解析输出、执行安全策略、插入监测代码并验证运行 | 运行任意后端代码                   |
-| Browser Storage         | 保存受限项目快照和版本                         | 提供跨设备持久化                   |
+| Supabase Auth           | 注册、登录、会话刷新与用户 JWT                 | 决定业务数据权限                   |
+| Postgres + RLS          | 保存用户项目、产物、版本和首版 HTML            | 保存无限大小 Artifact              |
+| Browser Storage         | 按用户保存本地投影并支持断网恢复               | 作为多设备并发的唯一事实来源       |
 | Preview Sandbox         | 运行已接受的 HTML 并报告运行状态               | 访问父页面、凭证、Cookie 或网络    |
 
 Next.js Route Handler 基于标准 Web `Request` 和 `Response` API，适合实现可迁移的流式接口。但它仍是公开 HTTP Endpoint，必须视为不可信边界。参见 [Next.js Backend for Frontend 指南](https://nextjs.org/docs/app/guides/backend-for-frontend)。
@@ -100,14 +107,14 @@ Next.js Route Handler 基于标准 Web `Request` 和 `Response` API，适合实�
 
 ### 4.1 快速模式首次生成
 
-1. 客户端校验输入，生成 `runId` 和幂等键；
-2. 服务端重新校验请求，并在调用模型前执行限额检查；
+1. 客户端校验输入，取得当前 Supabase Access Token，生成 `runId` 和幂等键；
+2. 服务端重新校验请求，通过 Supabase `getUser` 验证 Bearer Token，并在调用模型前执行用户级限额检查；
 3. Product Agent 一次返回 `IdeaAnalysis` 和 `ProductBrief`；
 4. Architecture Agent 根据 Product Brief 返回 `TechnicalPlan`；
 5. Engineering Agent 根据 Brief 和 Plan 返回 `GeneratedApp`；
 6. Validation 解析、检查并转换生成文档；
 7. Preview Sandbox 上报 ready 与交互证据；
-8. 客户端保存新的成功版本。
+8. 客户端先保存新的成功版本到用户分区 LocalStorage，再通过 RLS 写入 Supabase Postgres。
 
 Idea Analysis 与 Product Brief 共享同一上下文，因此由一次 Product Agent 调用返回，以减少一次模型往返。界面会如实表明它们来自同一个阶段，不伪造成两个独立 Agent 操作。
 
@@ -408,20 +415,30 @@ Preview Ready Timeout 与模型生成超时分开计算。不能只用 iframe `l
 
 ## 11. 持久化与版本
 
-### 11.1 MVP
+### 11.1 数据模型
 
-- 使用带 `schemaVersion` 的 `localStorage` Repository，并封装在 `ProjectStore` 接口后；
-- 只保存一个活动项目和有限数量的历史版本；
+- `projects`：当前项目快照，包含 `user_id`、Prompt、Run/Stage 状态、Product/Technical/Generated 产物、活动版本、错误与修订；
+- `project_versions`：最近三个成功版本，包含结构化产物、确定性检查和 `accepted_html`；
+- HTML 首版按文本存入 Postgres，数据库和 Zod 都限制为 150 KB；超过这个门槛迁移到 Supabase Storage，并只在版本行保存对象引用和摘要；
+- 当前 UI 只恢复用户最近保存的项目，Schema 支持后续增加项目列表。
+
+两张表都引用 `auth.users` 并启用 RLS。匿名角色没有表权限；`authenticated` 角色获得明确 CRUD Grants 后，还必须通过每类操作的 Owner Policy。版本写入额外检查父项目属于同一 `auth.uid()`。仓库和部署环境不使用 `service_role` Key。
+
+### 11.2 本地缓存与同步
+
+- LocalStorage 使用 `schemaVersion: 2`，Key 按 `guest` 或 Supabase User ID 分区；
 - 快照包含校验信息、时间、产物修订、活动版本和最近成功预览；
-- 每次读取都先通过 Schema 校验；
-- 超限时优先淘汰最旧且非活动版本；
-- 损坏或更高版本数据进入隔离状态，并向用户提供本地重置。
+- 每次读取都先通过 Zod Schema 校验，损坏或未知版本进入安全降级；
+- 容量不足时压缩为当前成功版本，仍失败则明确提示而不假装已保存；
+- 登录时只比较当前用户本地快照与云端快照，`savedAt` 较新的版本胜出；
+- 两者都为空时才迁入游客快照，并重新生成项目和版本 ID，避免跨用户主键冲突；
+- 退出后立即切回游客分区；云端失败不阻断本地写入，用户手动重试或浏览器恢复联网时重新拉取并合并。
 
-首版选择 `localStorage` 而不是 IndexedDB，是因为受限单项目快照不需要查询和并发事务。通过 `ProjectStore` 接口保留未来替换能力。
+Last-Write-Wins 是单用户原型取舍。客户端时钟可被修改，也无法安全合并并发字段；生产版需要服务端 Revision、条件更新与冲突 UI。
 
-### 11.2 生产演进
+### 11.3 后续演进
 
-项目、版本、产物、Run、Event、用量和审计记录迁移到 Postgres 与对象存储。浏览器只保留可恢复的本地投影，不再作为事实来源。
+Run、Event、用量和审计记录仍需迁移到持久任务系统。浏览器继续作为可恢复投影，服务端 Revision 成为多设备事实来源；大体积 Artifact 迁移到带生命周期策略的对象存储。
 
 ## 12. 公共 Demo 保护
 
@@ -437,6 +454,7 @@ Preview Ready Timeout 与模型生成超时分开计算。不能只用 iframe `l
 - 客户端只收到通用错误和 Request ID；
 - Provider Secret、原始响应和完整 Prompt 不进入客户端包和普通服务端日志；
 - Feature Flag 可关闭实时生成并展示有明确标记的预置项目。
+- 配置 Supabase 后，`/api/runs` 要求 Bearer Token，并通过 Auth 服务端 `getUser` 结果绑定用户预算；不信任客户端提交的用户 ID。
 - 本地阶段限制单进程最多 15 次真实运行、单浏览器会话最多 3 次；幂等键重复请求不重复计数。
 - 根据 DeepSeek 人民币高峰单价和响应 `usage` 保守累计应用侧费用，并为每次接受的完整运行（含最多一次结构化修复）预留 ¥0.65；15 次预留总额为 ¥9.75，低于 D3 的 ¥10 上限。
 
@@ -518,16 +536,17 @@ D3 已选定 `deepseek-v4-flash`。本机 Key 配置完成后，先用两个固�
 
 ## 15. 需求追踪
 
-| 需求                   | 主要实现                                    | 验证方式                    |
-| ---------------------- | ------------------------------------------- | --------------------------- |
-| M1 创建模式和示例      | `IdeaComposer`、Request Schema              | Playwright 快速/引导流程    |
-| M2 真实分阶段 Pipeline | Orchestrator、Event Writer、Reducer         | 契约 + 集成 + E2E           |
-| M3 结构化产物          | Zod Output、`ArtifactCard`、Editor          | Schema + 查看/编辑 E2E      |
-| M4 可运行微型产品      | Engineering Agent、HTML Contract            | 五提示词 + Sandbox Run      |
-| M5 Preview 与验证      | Validator、iframe、Inspector                | 安全单测 + E2E              |
-| M6 下游重建            | Artifact Revision、Stale Reducer            | 状态单测 + Rebuild E2E      |
-| M7 失败/取消/重试      | Error Normalizer、AbortSignal、Retry API    | 故障注入 + E2E              |
-| M8 持久化与保护        | `ProjectStore`、Request Guards、Preset Flag | 存储/安全测试 + Bundle Scan |
+| 需求                   | 主要实现                                    | 验证方式                           |
+| ---------------------- | ------------------------------------------- | ---------------------------------- |
+| M1 创建模式和示例      | `IdeaComposer`、Request Schema              | Playwright 快速/引导流程           |
+| M2 真实分阶段 Pipeline | Orchestrator、Event Writer、Reducer         | 契约 + 集成 + E2E                  |
+| M3 结构化产物          | Zod Output、`ArtifactCard`、Editor          | Schema + 查看/编辑 E2E             |
+| M4 可运行微型产品      | Engineering Agent、HTML Contract            | 五提示词 + Sandbox Run             |
+| M5 Preview 与验证      | Validator、iframe、Inspector                | 安全单测 + E2E                     |
+| M6 下游重建            | Artifact Revision、Stale Reducer            | 状态单测 + Rebuild E2E             |
+| M7 失败/取消/重试      | Error Normalizer、AbortSignal、Retry API    | 故障注入 + E2E                     |
+| M8 持久化与保护        | `ProjectStore`、Request Guards、Preset Flag | 存储/安全测试 + Bundle Scan        |
+| M9 账号与云同步        | Supabase Auth、Postgres、RLS、Local Cache   | Auth 单测 + Policy 检查 + 集成 E2E |
 
 ## 16. 最高风险与验证顺序
 
@@ -537,7 +556,8 @@ D3 已选定 `deepseek-v4-flash`。本机 Key 配置完成后，先用两个固�
 |    2 | 部署链路不会缓存或提前终止 NDJSON       | 本地测试后，在 D4 预览部署中验证                   |
 |    3 | 受限 CSP 与 iframe 仍支持预期交互       | 使用固定 HTML Fixture 测试 ready/error/interaction |
 |    4 | Brief 重建能改变结果且不破坏版本        | Fake Provider 集成测试 + Playwright                |
-|    5 | 未登录公共 Demo 的成本限制足够          | D3 用量估算、Provider 硬预算和限额测试             |
+|    5 | 已登录公共 Demo 的成本限制足够          | 用户 Token、D3 用量估算、Provider 硬预算和限额测试 |
+|    6 | RLS 能阻止跨账号读写                    | Policy 静态检查 + 两账户远程集成测试               |
 
 流式行为必须在最终部署平台实测，因为代理或 Serverless Runtime 可能缓存或中断响应。相关注意事项见 [Next.js Streaming 部署说明](https://nextjs.org/docs/app/guides/self-hosting)。
 
@@ -548,13 +568,13 @@ D3 已选定 `deepseek-v4-flash`。本机 Key 配置完成后，先用两个固�
 | 请求生命周期内顺序编排 | 持久工作流引擎 + Stage Job Queue               |
 | 一次 NDJSON 响应       | 可重连、可回放的持久 Event Log                 |
 | 单进程幂等窗口         | 数据库幂等键 + 分布式锁                        |
-| 浏览器项目快照         | Postgres 元数据 + 对象存储 Artifact            |
+| Postgres 中的小型 HTML | Supabase Storage + 摘要、校验和与生命周期清理  |
 | 一份自包含 HTML        | 隔离的多文件 Build Service + Artifact Registry |
 | 同应用 `srcdoc` 沙箱   | 独立 Origin Preview + Container 隔离           |
 | 本地尽力限流           | 按 Tenant、IP、预算执行的 Redis/Edge Quota     |
 | 单一 Provider Adapter  | 按能力路由并支持 Fallback                      |
 | 基础请求日志           | Trace、Metric、结构化日志、成本归因和告警      |
-| 无身份                 | 鉴权、租户、角色、权限与审计                   |
+| 单用户身份与 Owner RLS | 团队租户、角色、共享、权限与审计               |
 
 生产环境中，`POST /runs` 应只负责校验、入队并立即返回 Run ID。Worker 通过 Lease 领取 Stage，持久化产物修订和事件，并通过可重连 Stream 发布进度。幂等键和 Attempt Number 保证安全重试，避免浏览器断开或 Serverless Timeout 决定长任务生命周期。
 
@@ -568,9 +588,9 @@ D3 已选定 `deepseek-v4-flash`。本机 Key 配置完成后，先用两个固�
 
 已知依赖链更容易观察、验证、重试和解释。只有固定流程可靠且积累评估数据后，动态委派才值得引入。
 
-### 本地版本存储，而不是数据库
+### 本地优先，而不是只依赖数据库
 
-它从关键路径中移除账号与基础设施工作，同时仍可展示持久化、迁移和版本语义，但不承诺跨设备保存。
+Supabase 提供跨设备事实来源与 RLS 隔离；LocalStorage 仍承担即时写入、刷新恢复和断网降级。它不是第二套共享数据库，只有当前用户的最近项目投影，并通过显式冲突规则与云端合并。详见 ADR-0002。
 
 ### NDJSON，而不是 WebSocket
 
@@ -593,5 +613,7 @@ D2 已确认，本方案锁定：
 - 本地保护采用 15 次单进程运行上限、3 次单会话上限、每次 ¥0.65 预算预留、最多一次结构化修复、阶段 Token 上限、产品/架构 45 秒和工程 75 秒超时。
 - D4 采用 Vercel Hobby，通过本地 CLI 部署且不连接 GitHub；生产 Secret 由候选人在 Dashboard 配置。
 - 公开生成接口使用 Vercel WAF 按 IP 每 600 秒最多 3 次请求，应用侧预算保护作为第二层边界。
+- D5 后范围升级采用 Supabase Auth + Postgres；实时生成要求登录，Owner RLS 隔离项目和版本，LocalStorage 继续作为按用户分区的断网恢复层。
+- 首版 HTML 存入 Postgres 且限制为 150 KB，规模扩大后迁移 Supabase Storage；不配置 `service_role` Key。
 
 以下事项仍不锁定：公开仓库配置（D5）。
