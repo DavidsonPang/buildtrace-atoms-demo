@@ -1,0 +1,590 @@
+# BuildTrace 技术设计文档
+
+> 状态：D2 已确认（2026-09-07）  
+> 关联需求：[product-requirements.md](./product-requirements.md)  
+> 关键决策：[ADR-0001：生成沙箱化的自包含 HTML](./decisions/0001-sandboxed-self-contained-html.md)
+
+## 1. 技术方案摘要
+
+BuildTrace 采用 **本地优先的 Next.js 应用 + 服务端 Agent Orchestrator**：
+
+- 使用 React + TypeScript 实现工作台；
+- 使用 Next.js App Router 和 Route Handler 承载全栈应用；
+- 使用 Tailwind CSS 建立视觉系统；
+- 通过 Provider Adapter 隔离具体模型，供应商在 D3 决定；
+- 使用 Zod 校验请求、事件、产物和模型结构化输出；
+- 一个 `POST` 请求通过 NDJSON 流式返回事件；
+- Pipeline 固定为 Product → Architecture → Engineering → Validation；
+- 生成自包含 HTML，通过受限 `iframe srcDoc` 运行；
+- 使用确定性规则验证 HTML、安全策略、预览就绪和交互；
+- 使用带版本的浏览器本地存储保存项目；
+- 使用 Vitest 测试契约、状态和安全逻辑，使用 Playwright 测试核心浏览器流程。
+
+这是经过主动约束的原型架构。它展示真实编排、失败恢复、安全边界和完整浏览器体验，但不假装支持任意代码仓库或生产级云应用。
+
+## 2. 目标、约束与非目标
+
+### 2.1 目标
+
+- 每个可见 Pipeline 状态都来自真实操作；
+- 展示有用进度，但不暴露模型隐藏推理；
+- API Key 和模型调用只存在于服务端；
+- 失败后能从当前阶段恢复，不丢失有效上游产物；
+- Product Brief 修改后只重建下游内容；
+- 在可信边界内预览可交互的模型生成代码；
+- 实时模型不可用时，仍提供明确标记的完整预置体验。
+
+### 2.2 约束
+
+- 生成结果是一份受大小限制的 HTML，CSS 和 JavaScript 均内联；
+- 生成应用不使用远程后端，也不动态安装依赖；
+- 服务端任务与一次请求生命周期绑定，不假设已有持久任务队列；
+- MVP 项目数据只保存在当前浏览器；
+- 模型和部署平台分别留到 D3、D4 决定；
+- 公共访问无需登录，费用保护必须同时依赖应用限制与 Provider 硬预算。
+
+### 2.3 非目标
+
+- 运行生成的 Node.js、Python、Shell 或容器任务；
+- 支持任意包管理器或多文件构建；
+- 跨设备保存用户项目；
+- 展示 Chain-of-Thought 或其他隐藏推理；
+- 声称 iframe 可以让任意生成代码绝对安全。
+
+## 3. 系统边界
+
+```mermaid
+flowchart LR
+    U[用户] --> W[React 工作台]
+    W -->|POST /api/runs<br/>NDJSON stream| R[Next.js Route Handler]
+    R --> G[请求保护层]
+    G --> O[Agent Orchestrator]
+    O --> P[Provider Adapter]
+    P --> L[待选择的 LLM Provider]
+    O --> Z[Zod 契约校验]
+    O --> V[确定性验证器]
+    W --> S[带版本的浏览器存储]
+    W --> F[沙箱 Preview iframe]
+    F -->|ready / error / interaction<br/>带作用域的 postMessage| W
+
+    subgraph 服务端信任边界
+      R
+      G
+      O
+      P
+      Z
+      V
+    end
+
+    subgraph 不受信任的生成内容
+      F
+    end
+```
+
+### 3.1 模块职责
+
+| 模块 | 负责 | 不负责 |
+| --- | --- | --- |
+| Workspace | 收集输入、消费事件、展示产物、版本、日志和预览 | 直接调用模型或执行生成的服务端代码 |
+| Request Guards | 校验请求、限制大小/时间/频率、创建请求上下文 | 决定产品内容 |
+| Orchestrator | 执行真实阶段、发送事件、错误分类、响应取消 | 持久化项目或伪造进度 |
+| Provider Adapter | 发起模型调用并统一结构化结果和错误 | 管理 UI 或项目状态 |
+| Contract Validation | 拒绝不合规请求、事件和模型产物 | 判断主观产品质量 |
+| Deterministic Validator | 解析输出、执行安全策略、插入监测代码并验证运行 | 运行任意后端代码 |
+| Browser Storage | 保存受限项目快照和版本 | 提供跨设备持久化 |
+| Preview Sandbox | 运行已接受的 HTML 并报告运行状态 | 访问父页面、凭证、Cookie 或网络 |
+
+Next.js Route Handler 基于标准 Web `Request` 和 `Response` API，适合实现可迁移的流式接口。但它仍是公开 HTTP Endpoint，必须视为不可信边界。参见 [Next.js Backend for Frontend 指南](https://nextjs.org/docs/app/guides/backend-for-frontend)。
+
+## 4. 运行流程
+
+### 4.1 快速模式首次生成
+
+1. 客户端校验输入，生成 `runId` 和幂等键；
+2. 服务端重新校验请求，并在调用模型前执行限额检查；
+3. Product Agent 一次返回 `IdeaAnalysis` 和 `ProductBrief`；
+4. Architecture Agent 根据 Product Brief 返回 `TechnicalPlan`；
+5. Engineering Agent 根据 Brief 和 Plan 返回 `GeneratedApp`；
+6. Validation 解析、检查并转换生成文档；
+7. Preview Sandbox 上报 ready 与交互证据；
+8. 客户端保存新的成功版本。
+
+Idea Analysis 与 Product Brief 共享同一上下文，因此由一次 Product Agent 调用返回，以减少一次模型往返。界面会如实表明它们来自同一个阶段，不伪造成两个独立 Agent 操作。
+
+### 4.2 引导模式
+
+引导模式将目标用户、核心操作和约束随初始想法发送。Product Agent 生成相同产物，但客户端在 `ProductBrief` 后进入 `awaiting_user`。用户点击“开始构建”后，再自动执行 Architecture、Engineering 和 Validation。
+
+### 4.3 Product Brief 重建
+
+1. 客户端将修改后的 Brief 保存为新修订；
+2. 固定依赖规则把 `technicalPlan`、`generatedApp` 和 `validation` 标记为 stale；
+3. UI 明确列出受影响阶段；
+4. 用户确认后，客户端携带修改后的 Brief 与有效上游上下文提交 `rebuildFrom: "architecture"`；
+5. 服务端重新校验客户端产物，并执行 Architecture → Engineering → Validation；
+6. 新版本通过前，上一个 ready 版本继续作为活动预览。
+
+MVP 不实现通用依赖图。固定依赖链更容易测试，也足以证明局部下游重建能力。
+
+### 4.4 重试与取消
+
+- 客户端取消时中止 Fetch；
+- Route Handler 将 `request.signal` 传递给 Orchestrator 和 Provider；
+- 失败阶段记录标准化错误，已完成上游产物继续保留；
+- 重试请求携带有效产物快照和 `retryFrom`，服务端必须重新执行 Schema 与大小校验；
+- 同一幂等键在服务端有效窗口内不能重复发起付费调用。
+
+## 5. 状态模型
+
+### 5.1 Run 状态
+
+```text
+idle
+  → running
+  → awaiting_user       # 仅引导模式
+  → running
+  → ready
+
+running → failed
+running → cancelling → cancelled
+failed  → retrying → running
+ready   → rebuilding → ready | failed
+```
+
+### 5.2 Stage 状态
+
+```text
+queued → running → completed
+                 ↘ failed → retrying → running
+
+completed → stale → running
+queued | running → cancelled
+```
+
+### 5.3 不变量
+
+- 一个 Run 同时最多有一个模型阶段处于 `running`；
+- 上游必需产物未通过校验时，下游不能开始；
+- `ready` 必须同时满足产物已接受、阻塞检查通过和 iframe 就绪握手成功；
+- 重建失败不能替换 `activeVersionId`；
+- Run 内事件 `sequence` 必须单调递增；
+- stale 产物可查看，但不能被静默用于新构建。
+
+## 6. 事件协议
+
+`POST /api/runs` 返回 `application/x-ndjson`，每一行都是可以独立解析的 JSON 事件。相比浏览器 `EventSource`，NDJSON 更适合携带结构化 `POST` 请求体的一次性生成任务。
+
+```ts
+type StageId =
+  | "product"
+  | "architecture"
+  | "engineering"
+  | "validation";
+
+type RunEvent =
+  | Event<"run.accepted", RunMetadata>
+  | Event<"stage.started", StageMetadata>
+  | Event<"stage.progress", PublicProgress>
+  | Event<"artifact.completed", ArtifactEnvelope>
+  | Event<"stage.completed", StageSummary>
+  | Event<"validation.completed", ValidationReport>
+  | Event<"stage.failed", PublicStageError>
+  | Event<"run.awaiting_user", AwaitingUserPayload>
+  | Event<"run.completed", CompletedRun>
+  | Event<"run.cancelled", CancelledRun>;
+
+type Event<TType extends string, TPayload> = {
+  protocolVersion: 1;
+  runId: string;
+  sequence: number;
+  timestamp: string;
+  type: TType;
+  stage?: StageId;
+  payload: TPayload;
+};
+```
+
+协议规则：
+
+- 服务端只通过一个 Event Writer 输出，保证顺序；
+- Heartbeat 只保持连接，不能推进阶段状态；
+- `stage.progress` 只能包含简短公开状态，不能包含隐藏推理；
+- 客户端记录并忽略未知协议版本或事件类型，不能因此破坏已有状态；
+- 每个 Run 只允许一个终止事件，发送后关闭 Stream。
+
+## 7. 请求与模型输出契约
+
+Zod 是运行时契约的单一事实来源。TypeScript 类型由 Schema 推导；支持 Structured Output 的 Provider 使用生成的 JSON Schema。相关能力见 [Zod JSON Schema 文档](https://zod.dev/json-schema)。
+
+### 7.1 请求
+
+```ts
+const RunRequestSchema = z.object({
+  protocolVersion: z.literal(1),
+  runId: z.string().uuid(),
+  idempotencyKey: z.string().min(16).max(128),
+  mode: z.enum(["quick", "guided"]),
+  action: z.enum(["initial", "continue", "retry", "rebuild"]),
+  prompt: z.string().trim().min(10).max(2_000),
+  context: z.object({
+    audience: z.string().max(300).optional(),
+    primaryAction: z.string().max(300).optional(),
+    constraints: z.array(z.string().max(200)).max(8).optional(),
+  }).optional(),
+  retryFrom: StageIdSchema.optional(),
+  rebuildFrom: StageIdSchema.optional(),
+  artifacts: ArtifactSnapshotSchema.optional(),
+});
+```
+
+### 7.2 Product Agent 输出
+
+```ts
+const ProductAgentOutputSchema = z.object({
+  ideaAnalysis: z.object({
+    problem: z.string().min(20).max(800),
+    audience: z.string().min(10).max(500),
+    assumptions: z.array(z.string().max(240)).min(1).max(6),
+    risks: z.array(z.string().max(240)).max(6),
+  }),
+  productBrief: z.object({
+    productName: z.string().min(2).max(80),
+    valueProposition: z.string().min(20).max(300),
+    primaryUser: z.string().min(10).max(300),
+    primaryAction: z.string().min(10).max(300),
+    functionalRequirements: z.array(z.string().max(240)).min(2).max(8),
+    acceptanceCriteria: z.array(z.string().max(240)).min(2).max(8),
+    constraints: z.array(z.string().max(240)).max(8),
+    outOfScope: z.array(z.string().max(240)).max(8),
+  }),
+});
+```
+
+### 7.3 Architecture Agent 输出
+
+```ts
+const TechnicalPlanSchema = z.object({
+  interactionModel: z.string().min(20).max(600),
+  dataModel: z.array(z.object({
+    name: z.string().max(80),
+    fields: z.array(z.string().max(120)).max(12),
+  })).max(8),
+  components: z.array(z.object({
+    name: z.string().max(80),
+    responsibility: z.string().max(240),
+  })).min(2).max(12),
+  behaviors: z.array(z.string().max(240)).min(1).max(12),
+  validationPlan: z.array(z.string().max(240)).min(1).max(10),
+});
+```
+
+### 7.4 Engineering Agent 输出
+
+```ts
+const GeneratedAppSchema = z.object({
+  title: z.string().min(2).max(100),
+  summary: z.string().min(20).max(300),
+  html: z.string().min(300).max(MAX_HTML_BYTES),
+  implementedRequirementIds: z.array(z.string()).min(1),
+});
+```
+
+每个 Agent 只接收当前阶段必要的最小上下文。原始 Provider 响应不发送到浏览器，也不写入普通应用日志。Schema 失败时最多允许一次受限的结构化修复，仍失败则明确结束当前阶段。
+
+## 8. Provider Adapter
+
+模型选型留到 D3，应用只依赖内部接口：
+
+```ts
+interface ModelProvider {
+  generateStructured<T>(input: {
+    operation: "product" | "architecture" | "engineering";
+    schema: z.ZodType<T>;
+    systemPrompt: string;
+    userPayload: unknown;
+    maxOutputTokens: number;
+    signal: AbortSignal;
+  }): Promise<{
+    data: T;
+    providerRequestId?: string;
+    usage?: TokenUsage;
+    latencyMs: number;
+  }>;
+}
+```
+
+错误统一映射：
+
+| 类型 | 是否可重试 | 用户行为 |
+| --- | --- | --- |
+| `rate_limited` | 有限重试 | 展示等待建议，不静默循环 |
+| `timeout` | 是 | 重试失败阶段或查看预置项目 |
+| `invalid_output` | 结构修复一次 | 明确说明契约错误 |
+| `content_rejected` | 否 | 建议修改输入 |
+| `quota_exhausted` | 否 | 关闭实时生成并提供预置项目 |
+| `provider_unavailable` | 有限重试 | 保留已有产物并提供重试 |
+| `internal` | 不自动重试 | 返回请求 ID，不暴露敏感详情 |
+
+## 9. 生成内容安全边界
+
+即使内容来自模型，也必须视为不受信任输入。
+
+### 9.1 静态校验与转换
+
+进入 Preview 前，服务端验证器必须：
+
+1. 限制字节数和 DOM 嵌套深度；
+2. 将 HTML 解析为 AST，不能只依赖正则表达式；
+3. 要求存在 `body` 和可见内容；
+4. 禁止 iframe、object、embed、meta refresh、外部脚本/样式、危险 URL 协议和顶层导航；
+5. 根据自包含契约禁止远程网络依赖；
+6. 注入严格 CSP；
+7. 注入最小 Runtime Bridge，上报 ready、error、unhandled rejection 和 interaction；
+8. 将同一份已接受文档同时提供给 Code 与 Preview。
+
+注入文档的 CSP 等价于：
+
+```text
+default-src 'none';
+script-src 'unsafe-inline';
+style-src 'unsafe-inline';
+img-src data: blob:;
+font-src data:;
+connect-src 'none';
+media-src data: blob:;
+object-src 'none';
+frame-src 'none';
+form-action 'none';
+base-uri 'none';
+```
+
+### 9.2 Iframe 策略
+
+Preview 使用 `srcDoc` 和 `sandbox="allow-scripts"`，且不启用：
+
+- `allow-same-origin`；
+- 表单提交、弹窗、下载、Pointer Lock 或顶层导航；
+- 父页面 DOM、Cookie 和浏览器存储访问；
+- CSP 规则之外的网络访问。
+
+MDN 将 `srcdoc` 明确列为潜在注入入口，并建议在不需要访问父页面时使用不含 `allow-same-origin` 的 Sandbox；同时不建议对同源内容组合使用 `allow-scripts` 与 `allow-same-origin`。参见 [`srcdoc` 安全说明](https://developer.mozilla.org/en-US/docs/Web/API/HTMLIFrameElement/srcdoc)和 [`iframe` Sandbox 参考](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/iframe)。
+
+### 9.3 Preview 通信
+
+不带 `allow-same-origin` 的 `srcdoc` Frame 使用不透明 Origin，因此父页面只接受同时满足以下条件的消息：
+
+- `event.source === iframe.contentWindow`；
+- 消息通过 `PreviewEventSchema`；
+- 消息带有校验后注入、不可预测且仅当前 Run 有效的 Channel Token；
+- 消息类型在允许列表内；
+- Payload 大小不超过限制。
+
+Frame 因不透明 Origin 必须使用 `postMessage(..., "*")`，所以消息中不得包含密钥或用户正文。父页面以 `source + token + schema` 作为有效通道边界。参见 [`postMessage` 安全建议](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage)。
+
+### 9.4 诚实限制
+
+以上措施能显著限制影响，但不能证明任意 HTML/JavaScript 绝对安全。生产系统应把构建和预览放在独立 Origin，通过隔离 Worker/Container、独立响应头、资源配额和持续安全测试进一步收紧边界。
+
+## 10. 确定性验证
+
+验证结果必须来自可复现证据，而不是通用 LLM 评价。
+
+| 检查 | 是否阻塞 | 证据 |
+| --- | --- | --- |
+| 请求与产物 Schema | 是 | Zod 解析结果 |
+| 输出大小和单文件限制 | 是 | 字节数与文档数量 |
+| HTML 可解析且有可见主体 | 是 | AST 检查 |
+| 禁止元素、URL 和能力 | 是 | 命中的 Policy Rule ID |
+| 需求映射存在 | 是 | ID 属于 Product Brief 验收项 |
+| Preview 在时限内 ready | 是 | 带 Run Token 的 iframe 握手 |
+| 启动期间无运行错误 | 是 | `error` / `unhandledrejection` 事件 |
+| 至少存在有效交互 | 是 | 静态交互目标 + Runtime Interaction Signal |
+| 响应式启发式检查 | 警告 | viewport meta 与溢出检查 |
+| 主观产品质量评价 | 信息 | 如增加模型或人工评价，必须明确标记 |
+
+Preview Ready Timeout 与模型生成超时分开计算。不能只用 iframe `load` 事件作为成功，因为浏览器出于安全原因不会通过该事件暴露所有加载错误。
+
+## 11. 持久化与版本
+
+### 11.1 MVP
+
+- 使用带 `schemaVersion` 的 `localStorage` Repository，并封装在 `ProjectStore` 接口后；
+- 只保存一个活动项目和有限数量的历史版本；
+- 快照包含校验信息、时间、产物修订、活动版本和最近成功预览；
+- 每次读取都先通过 Schema 校验；
+- 超限时优先淘汰最旧且非活动版本；
+- 损坏或更高版本数据进入隔离状态，并向用户提供本地重置。
+
+首版选择 `localStorage` 而不是 IndexedDB，是因为受限单项目快照不需要查询和并发事务。通过 `ProjectStore` 接口保留未来替换能力。
+
+### 11.2 生产演进
+
+项目、版本、产物、Run、Event、用量和审计记录迁移到 Postgres 与对象存储。浏览器只保留可恢复的本地投影，不再作为事实来源。
+
+## 12. 公共 Demo 保护
+
+### 12.1 应用代码内强制执行
+
+- 在模型调用前检查 Prompt 与 Artifact 大小；
+- 每个阶段限制最大输出 Token；
+- 设置请求与阶段超时；
+- 结构化输出最多自动修复一次；
+- 手动重试次数受限；
+- 使用不透明 Session ID 与尽力而为的滑动窗口限流；
+- 通过幂等键合并正在运行的重复请求；
+- 客户端只收到通用错误和 Request ID；
+- Provider Secret、原始响应和完整 Prompt 不进入客户端包和普通服务端日志；
+- Feature Flag 可关闭实时生成并展示有明确标记的预置项目。
+
+### 12.2 应用之外执行
+
+- 设置 Provider Project Budget 和用量告警；
+- 在部署平台支持时启用请求或防火墙限制；
+- Key 只存储于服务端环境变量；
+- 开发环境与公共预览使用不同凭证。
+
+### 12.3 已知限制
+
+内存限流无法在多个 Serverless Instance 之间保持全局一致，也可以被绕过。它只能作为纵深防御，不能成为唯一预算边界。D3 必须确认 Provider 硬预算；生产方案需要 Redis 等共享配额存储和带身份的租户限额。
+
+## 13. 前端结构
+
+工作台由一个只消费已校验 `RunEvent` 的 Reducer 驱动：
+
+```text
+BuilderPage
+├── ProjectHeader
+├── StageRail
+│   ├── StageStatusItem
+│   └── VersionList
+├── Workbench
+│   ├── IdeaComposer
+│   ├── AgentActivity
+│   └── ArtifactCard
+│       └── ProductBriefEditor
+└── Inspector
+    ├── PreviewPanel
+    ├── CodePanel
+    ├── LogsPanel
+    └── ValidationPanel
+```
+
+状态分为三类：
+
+- **Server Event State**：Run、Stage、Artifact、公开日志与 Validation；
+- **Local UI State**：活动标签、展开卡片、编辑草稿、预览宽度；
+- **Persisted Project State**：已接受产物和成功版本。
+
+客户端先缓存不完整 NDJSON 文本，遇到换行后再逐行解析；每个事件都必须通过 Schema 才能进入 Reducer。流中断时进入 `transport_interrupted`，此前已接受产物继续保留。
+
+## 14. 测试策略
+
+### 14.1 Vitest 单元与契约测试
+
+- 合法和非法状态转换；
+- 事件排序、重复事件和未知协议版本；
+- 请求、产物和错误 Schema；
+- 下游 stale 传播；
+- 取消、失败、重试和重建后的 Reducer 行为；
+- HTML Policy、CSP 注入和 Preview Bridge；
+- 存储迁移、损坏、容量限制和淘汰；
+- 限流与幂等边界。
+
+### 14.2 集成测试
+
+- 使用确定性 Fake Provider 完成 Orchestrator 成功流程；
+- 注入 Product、Architecture、Engineering 非法输出；
+- 验证 Timeout、Abort、Quota 和 Retry 映射；
+- 验证器阻止外部资源和禁止导航；
+- 重建失败时活动版本保持不变。
+
+### 14.3 Playwright 浏览器测试
+
+- 快速示例 → 真实事件流 → Preview Ready；
+- 引导模式只暂停一次，点击 Build 后继续；
+- 编辑 Brief → 下游 stale → 重建 → 新版本；
+- 运行错误显示在 Logs 并阻止 Ready；
+- 刷新后恢复最近成功状态；
+- 键盘访问和状态 Live Region；
+- 预置流程明确标记且不调用模型。
+
+### 14.4 真实模型冒烟测试
+
+D3 后使用五个固定提示词测试选定模型，记录 Schema 成功率、延迟、验证结果、运行就绪、交互和人工观察。Fake Provider E2E 只能证明应用行为确定，不能作为真实模型质量证据。
+
+## 15. 需求追踪
+
+| 需求 | 主要实现 | 验证方式 |
+| --- | --- | --- |
+| M1 创建模式和示例 | `IdeaComposer`、Request Schema | Playwright 快速/引导流程 |
+| M2 真实分阶段 Pipeline | Orchestrator、Event Writer、Reducer | 契约 + 集成 + E2E |
+| M3 结构化产物 | Zod Output、`ArtifactCard`、Editor | Schema + 查看/编辑 E2E |
+| M4 可运行微型产品 | Engineering Agent、HTML Contract | 五提示词 + Sandbox Run |
+| M5 Preview 与验证 | Validator、iframe、Inspector | 安全单测 + E2E |
+| M6 下游重建 | Artifact Revision、Stale Reducer | 状态单测 + Rebuild E2E |
+| M7 失败/取消/重试 | Error Normalizer、AbortSignal、Retry API | 故障注入 + E2E |
+| M8 持久化与保护 | `ProjectStore`、Request Guards、Preset Flag | 存储/安全测试 + Bundle Scan |
+
+## 16. 最高风险与验证顺序
+
+| 顺序 | 假设 | 扩展 UI 前的验证方式 |
+| ---: | --- | --- |
+| 1 | 选定模型能稳定返回受限结构化产物和 HTML | D3 后用两个固定提示词做 Provider Spike |
+| 2 | 部署链路不会缓存或提前终止 NDJSON | 本地测试后，在 D4 预览部署中验证 |
+| 3 | 受限 CSP 与 iframe 仍支持预期交互 | 使用固定 HTML Fixture 测试 ready/error/interaction |
+| 4 | Brief 重建能改变结果且不破坏版本 | Fake Provider 集成测试 + Playwright |
+| 5 | 未登录公共 Demo 的成本限制足够 | D3 用量估算、Provider 硬预算和限额测试 |
+
+流式行为必须在最终部署平台实测，因为代理或 Serverless Runtime 可能缓存或中断响应。相关注意事项见 [Next.js Streaming 部署说明](https://nextjs.org/docs/app/guides/self-hosting)。
+
+## 17. 原型到生产的演进
+
+| MVP | 生产方向 |
+| --- | --- |
+| 请求生命周期内顺序编排 | 持久工作流引擎 + Stage Job Queue |
+| 一次 NDJSON 响应 | 可重连、可回放的持久 Event Log |
+| 单进程幂等窗口 | 数据库幂等键 + 分布式锁 |
+| 浏览器项目快照 | Postgres 元数据 + 对象存储 Artifact |
+| 一份自包含 HTML | 隔离的多文件 Build Service + Artifact Registry |
+| 同应用 `srcdoc` 沙箱 | 独立 Origin Preview + Container 隔离 |
+| 本地尽力限流 | 按 Tenant、IP、预算执行的 Redis/Edge Quota |
+| 单一 Provider Adapter | 按能力路由并支持 Fallback |
+| 基础请求日志 | Trace、Metric、结构化日志、成本归因和告警 |
+| 无身份 | 鉴权、租户、角色、权限与审计 |
+
+生产环境中，`POST /runs` 应只负责校验、入队并立即返回 Run ID。Worker 通过 Lease 领取 Stage，持久化产物修订和事件，并通过可重连 Stream 发布进度。幂等键和 Attempt Number 保证安全重试，避免浏览器断开或 Serverless Timeout 决定长任务生命周期。
+
+## 18. 主动取舍
+
+### 自包含 HTML，而不是任意仓库
+
+牺牲框架多样性和生成后端，换取确定性启动、无动态依赖供应链、受限输出和稳定预览。详见 ADR-0001。
+
+### 固定 Pipeline，而不是动态 Agent 规划
+
+已知依赖链更容易观察、验证、重试和解释。只有固定流程可靠且积累评估数据后，动态委派才值得引入。
+
+### 本地版本存储，而不是数据库
+
+它从关键路径中移除账号与基础设施工作，同时仍可展示持久化、迁移和版本语义，但不承诺跨设备保存。
+
+### NDJSON，而不是 WebSocket
+
+当前交互是一次请求范围内、以服务端到客户端为主的 Stream。NDJSON 支持 `POST` 和原生 Stream，基础设施更简单；持久双向通信属于生产演进。
+
+## 19. D2 锁定结论
+
+D2 已确认，本方案锁定：
+
+- PRD 中的 Must / Should / Won't；
+- 快速模式为默认，引导模式只在 Product Brief 暂停一次；
+- Product Brief 可编辑，并按固定依赖规则使下游失效；
+- Product、Architecture、Engineering 和确定性 Validation 四阶段；
+- Next.js + React + TypeScript + Tailwind + Zod；
+- NDJSON 流式协议；
+- 受限的自包含 HTML 和 Sandbox Preview；
+- 带版本的本地优先持久化；
+- D3 前保持 Provider Neutral；
+- D2 通过后可以初始化本地 Git，并使用 Fake Provider 开始编码。
+
+以下事项仍不锁定：模型、Provider 和预算（D3），部署平台和远程资源（D4），公开仓库配置（D5）。
