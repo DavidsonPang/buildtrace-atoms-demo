@@ -6,9 +6,9 @@ BuildTrace 是一个“从想法到可运行产品”的透明 AI Builder：用�
 
 ## 三步体验
 
-1. 选择“项目报价计算器”等示例，或输入至少 10 个字符的产品想法。
+1. 点击“预置成功项目”可以零成本立即体验完整结果；也可以选择示例或输入至少 10 个字符的产品想法。
 2. 点击“开始生成”，观察 Product、Architecture、Engineering、Validation 四个阶段的真实事件与中间产物。
-3. 在右侧切换预览、代码、日志和验证结果，并直接操作生成的应用。
+3. 在右侧操作预览；如需观察 Human-in-the-loop 流程，可切换引导模式，编辑 Product Brief 后只重建下游阶段。
 
 在线生成使用 DeepSeek V4 Flash，通常需要约 40–90 秒。公开 Demo 按 IP 限制为每 10 分钟 3 次生成请求，以控制匿名滥用和模型费用。
 
@@ -18,9 +18,15 @@ BuildTrace 是一个“从想法到可运行产品”的透明 AI Builder：用�
 - Product → Architecture → Engineering → Validation 四阶段 Pipeline。
 - Zod 校验请求、Agent 结构化输出和流式 NDJSON 事件。
 - DeepSeek Provider Adapter、分阶段超时、错误归一化和一次受限格式修复。
+- 快速模式与引导模式；引导模式会在 Product Brief 后暂停，等待用户确认。
+- Product Brief 结构化编辑、下游失效标记和从 Architecture 开始的局部重建。
+- 失败阶段续跑：保留已成功的上游产物，只重试失败阶段及其下游。
 - 自包含 HTML 产物；进入预览前执行大小、结构、危险标签、外部资源和交互目标检查。
 - `iframe sandbox="allow-scripts"` 隔离运行，使用带随机 Channel Token 的 `postMessage` 验证就绪、交互和运行时错误。
-- 三个一键示例、生成取消、阶段产物、代码、事件日志和验证面板。
+- 三个一键示例、生成取消、阶段产物、代码、事件日志、验证面板和 HTML 下载。
+- 基于 LocalStorage 的版本化项目快照：Schema 校验、损坏数据安全降级、最近 3 个成功版本及刷新恢复。
+- Preview 只有在 iframe 报告 Ready 后才提交新版本；新产物运行失败时保留最近一次成功预览。
+- 明确标注的预置成功项目，通过静态 API 返回，不调用模型，保证评审者可以零成本进入完整体验。
 - 应用侧会话/预算保护，以及 Vercel WAF 的 IP 固定窗口限流。
 
 ## 架构
@@ -89,7 +95,7 @@ npm run build
 npm run test:e2e
 ```
 
-当前证据包括 10 个单元测试、Fake Provider 浏览器端到端测试、5 个固定提示词的真实模型评测，以及 Vercel 生产环境的完整实时生成和 WAF 429 验证。细节与失败样本均记录在[验证报告](docs/validation-report.md)中。
+当前证据包括 17 个单元测试、4 条 Chromium 端到端流程、5 个固定提示词的真实模型评测，以及 Vercel 生产环境的完整实时生成和 WAF 429 验证。细节与失败样本均记录在[验证报告](docs/validation-report.md)中。
 
 ## 安全与费用边界
 
@@ -100,9 +106,9 @@ npm run test:e2e
 
 ## 已知限制
 
-- 当前运行状态保存在浏览器内存，刷新后的项目恢复、版本历史和回滚尚未实现。
-- Product Brief 当前可查看但不可编辑；下游失效与局部重建尚未实现。
-- 失败后重新生成会执行完整 Pipeline，尚未复用已成功的上游阶段。
+- 项目只在当前浏览器保存最近 3 个成功版本，没有账号、云端持久化、跨设备同步或多人协作。
+- 已完成的项目可在刷新后恢复；但刷新发生在未完成运行中时，不承诺恢复流式连接或一键续跑元数据。
+- 引导模式只在 Product Brief 暂停一次；Technical Plan 可查看但不提供可视化编辑器。
 - 生成范围限于自包含前端应用，不运行任意 npm 依赖或生成的后端代码。
 - Serverless 实例内的次数与费用估算会随冷启动重置，因此必须与平台限流和账户额度配合。
 
