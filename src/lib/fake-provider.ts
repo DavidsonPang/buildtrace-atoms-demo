@@ -11,7 +11,11 @@ type Scenario = "quote" | "event" | "roi";
 
 function scenarioFor(prompt: string): Scenario {
   const text = prompt.toLowerCase();
-  if (text.includes("活动") || text.includes("event") || text.includes("waitlist")) {
+  if (
+    text.includes("活动") ||
+    text.includes("event") ||
+    text.includes("waitlist")
+  ) {
     return "event";
   }
   if (text.includes("roi") || text.includes("saas") || text.includes("定价")) {
@@ -27,16 +31,21 @@ export function createProductArtifacts(prompt: string): ProductAgentOutput {
       ideaAnalysis: {
         problem:
           "自由职业者需要快速给出透明、一致的项目报价，但手工计算容易遗漏加急和附加服务成本。",
-        audience: "需要在首次沟通后快速向客户提供报价的自由职业设计师与开发者。",
+        audience:
+          "需要在首次沟通后快速向客户提供报价的自由职业设计师与开发者。",
         assumptions: [
           "报价基于工时、时薪、加急程度和附加服务计算。",
           "首版只生成报价摘要，不处理真实支付与合同签署。",
         ],
-        risks: ["过多字段会降低首次使用效率。", "价格建议不能替代用户自己的商业判断。"],
+        risks: [
+          "过多字段会降低首次使用效率。",
+          "价格建议不能替代用户自己的商业判断。",
+        ],
       },
       productBrief: {
         productName: "SwiftQuote",
-        valueProposition: "在一分钟内生成清晰、可解释、可复制给客户的项目报价。",
+        valueProposition:
+          "在一分钟内生成清晰、可解释、可复制给客户的项目报价。",
         primaryUser: "需要快速响应客户询价的自由职业设计师与开发者。",
         primaryAction: "选择服务并输入工时、时薪和交付要求，立即得到分项报价。",
         functionalRequirements: [
@@ -90,9 +99,11 @@ export function createProductArtifacts(prompt: string): ProductAgentOutput {
       },
       productBrief: {
         productName: "ValuePilot",
-        valueProposition: "把团队节省的时间换算成月度价值，并给出可解释的套餐建议。",
+        valueProposition:
+          "把团队节省的时间换算成月度价值，并给出可解释的套餐建议。",
         primaryUser: "正在比较 SaaS 采购成本与效率收益的团队负责人。",
-        primaryAction: "输入团队规模、人力成本和每周节省时间，比较套餐与回本周期。",
+        primaryAction:
+          "输入团队规模、人力成本和每周节省时间，比较套餐与回本周期。",
         functionalRequirements: [
           "R1：输入团队人数、时薪和每人每周节省时间。",
           "R2：计算每月节省价值与净收益。",
@@ -116,7 +127,8 @@ export function createProductArtifacts(prompt: string): ProductAgentOutput {
 export function createTechnicalPlan(prompt: string): TechnicalPlan {
   const scenario = scenarioFor(prompt);
   const common = {
-    interactionModel: "使用表单输入驱动页面内状态，所有计算与列表变化即时反馈，并提供明确的结果区。",
+    interactionModel:
+      "使用表单输入驱动页面内状态，所有计算与列表变化即时反馈，并提供明确的结果区。",
     validationPlan: [
       "验证初始页面包含可见主体和主要表单。",
       "验证输入变化可以改变结果。",
@@ -128,14 +140,29 @@ export function createTechnicalPlan(prompt: string): TechnicalPlan {
     quote: {
       ...common,
       dataModel: [
-        { name: "QuoteInput", fields: ["service", "hours", "rate", "urgency", "extras"] },
-        { name: "QuoteResult", fields: ["base", "rush", "extras", "total", "delivery"] },
+        {
+          name: "QuoteInput",
+          fields: ["service", "hours", "rate", "urgency", "extras"],
+        },
+        {
+          name: "QuoteResult",
+          fields: ["base", "rush", "extras", "total", "delivery"],
+        },
       ],
       components: [
-        { name: "QuoteForm", responsibility: "采集服务、工时、时薪和交付要求。" },
-        { name: "QuoteSummary", responsibility: "显示分项费用、总价和复制反馈。" },
+        {
+          name: "QuoteForm",
+          responsibility: "采集服务、工时、时薪和交付要求。",
+        },
+        {
+          name: "QuoteSummary",
+          responsibility: "显示分项费用、总价和复制反馈。",
+        },
       ],
-      behaviors: ["输入变化时重新计算报价。", "点击复制时写入剪贴板并展示成功状态。"],
+      behaviors: [
+        "输入变化时重新计算报价。",
+        "点击复制时写入剪贴板并展示成功状态。",
+      ],
     },
     event: {
       ...common,
@@ -145,9 +172,15 @@ export function createTechnicalPlan(prompt: string): TechnicalPlan {
       ],
       components: [
         { name: "RegistrationForm", responsibility: "添加新的报名者。" },
-        { name: "CapacityBoard", responsibility: "展示容量指标和筛选后的名单。" },
+        {
+          name: "CapacityBoard",
+          responsibility: "展示容量指标和筛选后的名单。",
+        },
       ],
-      behaviors: ["添加报名时按剩余容量分配状态。", "筛选按钮只显示对应报名者。"],
+      behaviors: [
+        "添加报名时按剩余容量分配状态。",
+        "筛选按钮只显示对应报名者。",
+      ],
     },
     roi: {
       ...common,
@@ -157,7 +190,10 @@ export function createTechnicalPlan(prompt: string): TechnicalPlan {
       ],
       components: [
         { name: "RoiForm", responsibility: "采集团队和效率参数。" },
-        { name: "Recommendation", responsibility: "展示套餐、净收益和回报倍数。" },
+        {
+          name: "Recommendation",
+          responsibility: "展示套餐、净收益和回报倍数。",
+        },
       ],
       behaviors: ["滑块变化时重算月度价值。", "根据团队规模切换推荐套餐。"],
     },

@@ -22,7 +22,13 @@ const BLOCKED_TAGS = new Set([
   "link",
 ]);
 
-const URL_ATTRIBUTES = new Set(["src", "href", "action", "formaction", "poster"]);
+const URL_ATTRIBUTES = new Set([
+  "src",
+  "href",
+  "action",
+  "formaction",
+  "poster",
+]);
 
 const csp = [
   "default-src 'none'",
@@ -75,8 +81,11 @@ export function validateAndInstrument(app: GeneratedApp): {
 
   walk(document, (node) => {
     if (node.tagName === "body") bodyFound = true;
-    if (node.nodeName === "#text" && node.value) visibleText += ` ${node.value}`;
-    if (["button", "input", "select", "textarea"].includes(node.tagName ?? "")) {
+    if (node.nodeName === "#text" && node.value)
+      visibleText += ` ${node.value}`;
+    if (
+      ["button", "input", "select", "textarea"].includes(node.tagName ?? "")
+    ) {
       interactiveElement = true;
     }
     if (node.tagName && BLOCKED_TAGS.has(node.tagName)) {
@@ -99,20 +108,25 @@ export function validateAndInstrument(app: GeneratedApp): {
     });
   });
 
-  const hasVisibleBody = bodyFound && visibleText.replace(/\s+/g, " ").trim().length >= 20;
+  const hasVisibleBody =
+    bodyFound && visibleText.replace(/\s+/g, " ").trim().length >= 20;
 
   checks.push({
     id: "visible-body",
     label: "可见页面主体",
     status: hasVisibleBody ? "pass" : "failure",
-    detail: hasVisibleBody ? "检测到可见主体内容。" : "页面缺少足够的可见内容。",
+    detail: hasVisibleBody
+      ? "检测到可见主体内容。"
+      : "页面缺少足够的可见内容。",
   });
 
   checks.push({
     id: "interaction-target",
     label: "有效交互",
     status: interactiveElement ? "pass" : "failure",
-    detail: interactiveElement ? "检测到表单或按钮控件。" : "未检测到可交互控件。",
+    detail: interactiveElement
+      ? "检测到表单或按钮控件。"
+      : "未检测到可交互控件。",
   });
 
   const policyPass = failures.length === 0;
@@ -120,7 +134,9 @@ export function validateAndInstrument(app: GeneratedApp): {
     id: "sandbox-policy",
     label: "沙箱安全策略",
     status: policyPass ? "pass" : "failure",
-    detail: policyPass ? "未发现被禁止的标签、导航或远程依赖。" : failures.join(" "),
+    detail: policyPass
+      ? "未发现被禁止的标签、导航或远程依赖。"
+      : failures.join(" "),
   });
 
   if (!hasVisibleBody) failures.push("缺少可见页面主体。");
@@ -129,7 +145,9 @@ export function validateAndInstrument(app: GeneratedApp): {
 
   const normalized = serialize(parsedDocument);
   const securityMeta = `<meta http-equiv="Content-Security-Policy" content="${csp}">`;
-  const acceptedHtml = normalized.replace("</head>", `${securityMeta}</head>`).replace("</body>", `${bridge}</body>`);
+  const acceptedHtml = normalized
+    .replace("</head>", `${securityMeta}</head>`)
+    .replace("</body>", `${bridge}</body>`);
 
   return { acceptedHtml, checks };
 }

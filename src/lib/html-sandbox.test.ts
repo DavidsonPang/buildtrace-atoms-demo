@@ -9,7 +9,9 @@ import {
 
 describe("validateAndInstrument", () => {
   it("接受自包含的交互式应用并注入运行桥", () => {
-    const result = validateAndInstrument(createGeneratedApp("创建项目报价计算器"));
+    const result = validateAndInstrument(
+      createGeneratedApp("创建项目报价计算器"),
+    );
 
     expect(result.checks.every((check) => check.status === "pass")).toBe(true);
     expect(result.acceptedHtml).toContain("Content-Security-Policy");
@@ -21,7 +23,8 @@ describe("validateAndInstrument", () => {
     expect(() =>
       validateAndInstrument({
         title: "Unsafe app",
-        summary: "A deliberately unsafe generated application for validator testing.",
+        summary:
+          "A deliberately unsafe generated application for validator testing.",
         implementedRequirementIds: ["R1"],
         html: `<!doctype html><html><head><script src="https://evil.example/a.js"></script></head><body><h1>Unsafe application body</h1><button>Try</button><iframe src="https://evil.example"></iframe></body></html>`,
       }),
@@ -32,7 +35,8 @@ describe("validateAndInstrument", () => {
     expect(() =>
       validateAndInstrument({
         title: "Static page",
-        summary: "A static generated page without the required meaningful interaction.",
+        summary:
+          "A static generated page without the required meaningful interaction.",
         implementedRequirementIds: ["R1"],
         html: `<!doctype html><html><head><style>body{color:#111}</style></head><body><main><h1>Only a static heading</h1><p>This page has enough visible body text but no useful interaction target.</p></main></body></html>`,
       }),
