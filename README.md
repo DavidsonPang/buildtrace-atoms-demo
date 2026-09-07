@@ -111,7 +111,7 @@ npm run build
 npm run test:e2e
 ```
 
-当前证据包括 30 个单元测试、4 条 Chromium 端到端流程、5 个固定提示词的真实模型评测，以及 Vercel 生产环境的完整实时生成和 WAF 429 验证。Supabase 远程集成验证会在项目和 Vercel 环境变量配置后补录；细节与失败样本均记录在[验证报告](docs/validation-report.md)中。
+当前证据包括 30 个单元测试、4 条 Chromium 端到端流程、5 个固定提示词的真实模型评测，以及 Vercel 生产环境的实时生成、WAF 429、邮箱登录与跨 Origin 云恢复验证。尚未完成的双账号越权测试和断网重连测试会在[验证报告](docs/validation-report.md)中明确保留。
 
 ## 安全与费用边界
 

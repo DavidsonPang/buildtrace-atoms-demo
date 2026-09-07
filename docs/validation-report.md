@@ -1,8 +1,8 @@
 # BuildTrace 验证报告
 
 > 日期：2026-09-07
-> 范围：本地端到端纵向切片、DeepSeek V4 Flash Provider Spike、五场景评测、Vercel 生产部署，以及 Supabase 身份/持久化升级的本地验证
-> 结论：本地核心生成链路通过；真实模型场景 4/5 成功，达到 PRD 的最低验收线；原生产环境真实 Pipeline 与平台限流已验证。Supabase 升级已通过本地静态和自动测试，远程数据库与两账户隔离仍待配置后验证。
+> 范围：本地端到端纵向切片、DeepSeek V4 Flash Provider Spike、五场景评测、Vercel 生产部署，以及 Supabase 身份/持久化升级的本地与生产验证
+> 结论：本地核心生成链路通过；真实模型场景 4/5 成功，达到 PRD 的最低验收线；生产环境真实 Pipeline 与平台限流已验证。Supabase 邮箱身份、数据库写入和跨 Origin 云恢复已在线验收；双账号越权与断网重连仍明确保留为待验证项。
 
 ## 1. 验证口径
 
@@ -103,6 +103,7 @@ D3 确认预算上限为 ¥10。本地实现包括：
 - 生产地址：<https://buildtrace-atoms-demo-xi.vercel.app>。
 - Function：Fluid Compute；平台时长上限 300 秒，Route 声明 `maxDuration = 180`。
 - Secret：`DEEPSEEK_API_KEY` 仅由候选人在 Vercel Dashboard 配置为 Production Secret；验证只读取变量名称和类型，没有回读值。
+- Supabase：Project URL 和 Publishable Key 配置为 Production Config；未配置 `service_role` Key。部署 `dpl_8ExouFWg56jjQErYYiQ5B4zHiZUQ` 构建成功并重新绑定稳定域名。
 - 上传边界：`.env*`、`.internal/`、内部执行计划、根目录文本材料、依赖、构建和测试产物均被 `.vercelignore` 排除。
 
 ### 6.2 在线真实生成
@@ -146,21 +147,27 @@ exceeded action = rate_limit (HTTP 429)
 - SQL Migration 对 `projects` 和 `project_versions` 启用 RLS、撤销匿名权限，并为 select/insert/update/delete 建立 Owner Policy；
 - Postgres 与运行时 Schema 都限制 HTML 大小；当前修改仍先写本地，云端错误有明确状态和重试入口。
 
-### 7.2 配置后必须补录的远程证据
+### 7.2 已完成的远程验证
 
-- 邮箱注册、确认、登录、刷新恢复会话和退出；
-- 账号 A 创建项目后跨浏览器恢复；账号 B 无法读取、修改或删除账号 A 的项目与版本；
-- 断网编辑保留在本地，恢复联网后重新读取云端并同步；
-- Vercel `/api/runs` 未登录返回 401，登录后完整 DeepSeek Pipeline 成功；
-- 浏览器 Network/Bundle 和 Git 历史中不存在 Provider Key 或 `service_role` Key。
+- Supabase Auth Settings Endpoint 返回 200；邮箱注册、确认、本地登录和刷新后的会话恢复成功；
+- 远程 `projects` 与 `project_versions` 表存在，匿名 Data API 请求均返回 PostgreSQL `42501 permission denied`；
+- 登录状态下加载预置项目后显示“已同步”，刷新本地页面仍恢复成功版本；
+- 本地 Fake Provider 的登录请求通过服务端 `auth.getUser` 并返回 HTTP 200，不产生模型费用；
+- 同一账户在 Vercel 生产 Origin 登录后，从 Postgres 恢复本地 Origin 创建的项目和版本，并显示“已同步”；
+- Vercel 构建完成并重新绑定 <https://buildtrace-atoms-demo-xi.vercel.app>。
+- 最终源码、Git 历史和未追踪文件名扫描没有发现 Secret 形态；对 251 个生产构建文件执行已配置 DeepSeek Secret 的精确值扫描，结果为 0；Vercel 变量清单不存在 `service_role`。Publishable Key 按设计进入浏览器包并由 RLS 约束。
 
-在以上证据完成前，不把 Supabase 升级描述为“已在线验收”。原第 6 节生产验证对应升级前基线。
+### 7.3 仍待验证
+
+- 使用第二个独立账号直接尝试读取、修改和删除账号 A 的项目，验证 Owner RLS 的动态越权结果；当前只有 Migration Policy 检查与匿名拒绝证据；
+- 真实断网编辑后恢复联网，验证自动重新拉取与同步；当前由代码路径和单元边界覆盖；
+- Vercel `/api/runs` 的未登录 401 与登录后完整 DeepSeek Pipeline；直连测试受本机网络超时影响，为避免额外模型费用未重复真实生成；
 
 ## 8. 已知限制与下一步
 
 - ROI 场景没有在 75 秒新上限下重复验证，保留为真实失败样本。
 - 最近一次成功产物会在新预览 Ready 后才写入版本；运行时错误会恢复旧预览，但没有覆盖所有浏览器兼容性故障。
-- Supabase 升级尚未完成远程数据库、邮件确认、两账户 RLS 与 Vercel 重部署验证。
+- Supabase 升级已完成远程数据库、邮箱身份、跨 Origin 恢复和 Vercel 重部署；双账号 RLS 动态越权与断网重连仍待验证。
 - 当前只恢复登录用户最近项目，没有多项目列表、共享、角色或多人协作。
 - 冲突策略依赖客户端 `savedAt`，不适合不可信时钟或多人并发编辑。
 - HTML 首版存入 Postgres，超过 150 KB 后仍需迁移 Supabase Storage。
@@ -170,4 +177,4 @@ exceeded action = rate_limit (HTTP 429)
 - 没有把 Provider 用量暴露给客户端；费用应以 DeepSeek 控制台账单为最终依据。
 - 内存次数与费用计数不是分布式配额；当前 WAF 限制单 IP 频率，但不能替代用户级配额。
 
-核心 Agent Pipeline、差异化重建、本地恢复和 Supabase 代码边界已完成；远程 Supabase 集成完成后再更新生产结论。
+核心 Agent Pipeline、差异化重建、本地恢复和 Supabase 单账号生产链路已完成；双账号隔离与断网重连不会被当前证据夸大为已验证。
