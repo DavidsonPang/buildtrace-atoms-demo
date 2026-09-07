@@ -5,6 +5,7 @@ test("从报价想法生成可交互的沙箱预览", async ({ page }) => {
   await expect(page.locator('main[data-hydrated="true"]')).toBeVisible();
 
   await expect(page.getByRole("heading", { name: /把想法变成/ })).toBeVisible();
+  await expect(page.getByText("本地模式 · 未连接云端")).toBeVisible();
   await page.getByRole("button", { name: "项目报价计算器" }).click();
   await page.getByRole("button", { name: /开始生成/ }).click();
 

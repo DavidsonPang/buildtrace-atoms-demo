@@ -6,11 +6,14 @@ import {
   createTechnicalPlan,
 } from "@/src/lib/fake-provider";
 import {
+  LEGACY_PROJECT_STORAGE_KEY,
   MAX_STORED_VERSIONS,
   PROJECT_STORAGE_KEY,
   ProjectSnapshotSchema,
+  forkProjectSnapshot,
   loadProject,
   saveProject,
+  selectAccountSnapshot,
   type ProjectSnapshot,
 } from "@/src/lib/project-store";
 
@@ -50,7 +53,8 @@ function snapshot(): ProjectSnapshot {
   };
 
   return ProjectSnapshotSchema.parse({
-    schemaVersion: 1,
+    schemaVersion: 2,
+    projectId: "8b38a126-fdd8-4784-9e92-101dc73420d5",
     savedAt: "2026-09-07T00:00:00.000Z",
     prompt,
     mode: "quick",
@@ -109,5 +113,63 @@ describe("project store", () => {
     const restored = loadProject(storage).snapshot;
     expect(restored?.versions).toHaveLength(MAX_STORED_VERSIONS);
     expect(restored?.versions[0].revision).toBe(3);
+  });
+
+  it("把旧版游客快照迁移到带项目 ID 的 v2 结构", () => {
+    const storage = new MemoryStorage();
+    const current = snapshot();
+    const legacy: Partial<ProjectSnapshot> = { ...current };
+    delete legacy.projectId;
+    storage.setItem(
+      LEGACY_PROJECT_STORAGE_KEY,
+      JSON.stringify({ ...legacy, schemaVersion: 1 }),
+    );
+
+    const restored = loadProject(storage, "guest").snapshot;
+    expect(restored?.schemaVersion).toBe(2);
+    expect(restored?.projectId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("按用户 ID 隔离本地缓存", () => {
+    const storage = new MemoryStorage();
+    saveProject(storage, snapshot(), "user-a");
+
+    expect(loadProject(storage, "user-a").snapshot).not.toBeNull();
+    expect(loadProject(storage, "user-b").snapshot).toBeNull();
+  });
+
+  it("把游客项目迁入账户时重建项目与版本 ID", () => {
+    const guest = snapshot();
+    const migrated = forkProjectSnapshot(guest);
+
+    expect(migrated.projectId).not.toBe(guest.projectId);
+    expect(migrated.versions[0].id).not.toBe(guest.versions[0].id);
+    expect(migrated.activeVersionId).toBe(migrated.versions[0].id);
+  });
+
+  it("账户已有本地或云端数据时不让游客快照参与冲突", () => {
+    const guest = snapshot();
+    const cloud = {
+      ...snapshot(),
+      projectId: "84c082c1-b442-4d03-833f-aa23fe89d23c",
+      savedAt: "2026-09-06T00:00:00.000Z",
+    };
+
+    expect(
+      selectAccountSnapshot({ local: null, cloud, guest })?.projectId,
+    ).toBe(cloud.projectId);
+  });
+
+  it("账户本地与云端冲突时选择 savedAt 较新者", () => {
+    const local = snapshot();
+    const cloud = {
+      ...snapshot(),
+      projectId: "84c082c1-b442-4d03-833f-aa23fe89d23c",
+      savedAt: "2026-09-08T00:00:00.000Z",
+    };
+
+    expect(
+      selectAccountSnapshot({ local, cloud, guest: snapshot() })?.projectId,
+    ).toBe(cloud.projectId);
   });
 });

@@ -25,7 +25,7 @@ export default defineConfig({
     ? undefined
     : {
         command:
-          "MODEL_PROVIDER=fake LIVE_GENERATION_ENABLED=false npm run dev -- --hostname 127.0.0.1",
+          "MODEL_PROVIDER=fake LIVE_GENERATION_ENABLED=false NEXT_PUBLIC_SUPABASE_URL= NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY= npm run dev -- --hostname 127.0.0.1",
         url: "http://127.0.0.1:3000",
         reuseExistingServer: !process.env.CI,
       },

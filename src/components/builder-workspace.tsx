@@ -15,6 +15,10 @@ import {
   type TechnicalPlan,
   type ValidationCheck,
 } from "@/src/lib/contracts";
+import {
+  loadLatestCloudProject,
+  saveCloudProject,
+} from "@/src/lib/cloud-project-store";
 import { CHANNEL_TOKEN_PLACEHOLDER } from "@/src/lib/html-sandbox";
 import {
   MAX_STORED_VERSIONS,
@@ -22,9 +26,12 @@ import {
   createProjectVersion,
   loadProject,
   saveProject,
+  selectAccountSnapshot,
+  type ProjectSnapshot,
   type ProjectVersion,
 } from "@/src/lib/project-store";
 
+import { AuthControls, useAuth } from "./auth-provider";
 import { ProductBriefEditor } from "./product-brief-editor";
 
 type StageState =
@@ -86,6 +93,7 @@ const initialStages = (): Record<StageId, StageState> => ({
 });
 
 export function BuilderWorkspace() {
+  const auth = useAuth();
   const [prompt, setPrompt] = useState(examples[0].prompt);
   const [mode, setMode] = useState<"quick" | "guided">("quick");
   const [guidedAudience, setGuidedAudience] = useState("");
@@ -109,6 +117,7 @@ export function BuilderWorkspace() {
   const [previewInteraction, setPreviewInteraction] = useState(false);
   const [error, setError] = useState("");
   const [storageError, setStorageError] = useState("");
+  const [cloudError, setCloudError] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const [editingBrief, setEditingBrief] = useState(false);
   const [rebuildPending, setRebuildPending] = useState(false);
@@ -117,6 +126,12 @@ export function BuilderWorkspace() {
   const [versions, setVersions] = useState<ProjectVersion[]>([]);
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
   const [briefRevision, setBriefRevision] = useState(0);
+  const [projectId, setProjectId] = useState("");
+  const [storageScope, setStorageScope] = useState("guest");
+  const [cloudStatus, setCloudStatus] = useState<
+    "local" | "syncing" | "synced" | "error"
+  >("local");
+  const [cloudRetryNonce, setCloudRetryNonce] = useState(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string>("");
@@ -128,6 +143,60 @@ export function BuilderWorkspace() {
   const nextVersionRevisionRef = useRef(1);
   const pendingVersionRef = useRef<ProjectVersion | null>(null);
   const previousActiveVersionRef = useRef<ProjectVersion | null>(null);
+  const currentSnapshotRef = useRef<ProjectSnapshot | null>(null);
+  const activeAuthScopeRef = useRef("guest");
+  const cloudReadyUserRef = useRef<string | null>(null);
+  const cloudSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const applySnapshot = useCallback((snapshot: ProjectSnapshot) => {
+    const interrupted = isInterruptedState(snapshot.runState);
+    const restoredStages = interrupted
+      ? markInterruptedStage(snapshot.stages)
+      : snapshot.stages;
+    const activeVersion =
+      snapshot.versions.find(
+        (version) => version.id === snapshot.activeVersionId,
+      ) ?? snapshot.versions.at(-1);
+
+    setProjectId(snapshot.projectId);
+    setPrompt(snapshot.prompt || examples[0].prompt);
+    setMode(snapshot.mode);
+    setRunState(interrupted ? "failed" : snapshot.runState);
+    setStages(restoredStages);
+    setProviderLabel(snapshot.providerLabel);
+    setProduct(snapshot.product);
+    setTechnicalPlan(snapshot.technicalPlan);
+    setGeneratedApp(snapshot.generatedApp);
+    setVersions(snapshot.versions);
+    setActiveVersionId(activeVersion?.id ?? null);
+    setBriefRevision(snapshot.briefRevision);
+    setError(
+      interrupted
+        ? "上一次生成在页面刷新时中断；已保留有效产物和最近成功预览。"
+        : snapshot.lastError,
+    );
+    setAcceptedHtml(activeVersion?.acceptedHtml ?? "");
+    setChecks(activeVersion?.checks ?? []);
+    setChannelToken(
+      activeVersion ? crypto.randomUUID().replaceAll("-", "") : "",
+    );
+    setPreviewReady(false);
+    setPreviewInteraction(false);
+    setEvents([]);
+    setCurrentProgress("");
+    setEditingBrief(false);
+    setRebuildPending(false);
+
+    productRef.current = snapshot.product;
+    technicalPlanRef.current = snapshot.technicalPlan;
+    generatedAppRef.current = snapshot.generatedApp;
+    providerLabelRef.current = snapshot.providerLabel;
+    nextVersionRevisionRef.current =
+      Math.max(0, ...snapshot.versions.map((version) => version.revision)) + 1;
+    previousActiveVersionRef.current = activeVersion ?? null;
+    pendingVersionRef.current = null;
+    currentSnapshotRef.current = snapshot;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,64 +206,122 @@ export function BuilderWorkspace() {
     window.sessionStorage.setItem(sessionStorageKey, sessionId);
     sessionIdRef.current = sessionId;
 
-    const restored = loadProject(window.localStorage);
+    const restored = loadProject(window.localStorage, "guest");
     queueMicrotask(() => {
       if (cancelled) return;
       if (restored.error) setStorageError(restored.error);
-      if (restored.snapshot) {
-        const snapshot = restored.snapshot;
-        const interrupted = isInterruptedState(snapshot.runState);
-        const restoredStages = interrupted
-          ? markInterruptedStage(snapshot.stages)
-          : snapshot.stages;
-        const activeVersion =
-          snapshot.versions.find(
-            (version) => version.id === snapshot.activeVersionId,
-          ) ?? snapshot.versions.at(-1);
-
-        setPrompt(snapshot.prompt || examples[0].prompt);
-        setMode(snapshot.mode);
-        setRunState(interrupted ? "failed" : snapshot.runState);
-        setStages(restoredStages);
-        setProviderLabel(snapshot.providerLabel);
-        setProduct(snapshot.product);
-        setTechnicalPlan(snapshot.technicalPlan);
-        setGeneratedApp(snapshot.generatedApp);
-        setVersions(snapshot.versions);
-        setActiveVersionId(activeVersion?.id ?? null);
-        setBriefRevision(snapshot.briefRevision);
-        setError(
-          interrupted
-            ? "上一次生成在页面刷新时中断；已保留有效产物和最近成功预览。"
-            : snapshot.lastError,
-        );
-        setAcceptedHtml(activeVersion?.acceptedHtml ?? "");
-        setChecks(activeVersion?.checks ?? []);
-        if (activeVersion) {
-          setChannelToken(crypto.randomUUID().replaceAll("-", ""));
-        }
-
-        productRef.current = snapshot.product;
-        technicalPlanRef.current = snapshot.technicalPlan;
-        generatedAppRef.current = snapshot.generatedApp;
-        providerLabelRef.current = snapshot.providerLabel;
-        nextVersionRevisionRef.current =
-          Math.max(0, ...snapshot.versions.map((version) => version.revision)) +
-          1;
-        previousActiveVersionRef.current = activeVersion ?? null;
-      }
+      applySnapshot(restored.snapshot ?? createEmptyProjectSnapshot());
       setHydrated(true);
     });
 
     return () => {
       cancelled = true;
     };
+  }, [applySnapshot]);
+
+  useEffect(() => {
+    if (!hydrated || auth.status === "loading") return;
+    let cancelled = false;
+
+    if (auth.status === "signed_in" && auth.user && auth.client) {
+      const userId = auth.user.id;
+      const client = auth.client;
+      if (
+        activeAuthScopeRef.current === userId &&
+        cloudReadyUserRef.current === userId
+      )
+        return;
+
+      setCloudStatus("syncing");
+      setCloudError("");
+      void (async () => {
+        const local = loadProject(window.localStorage, userId);
+        const guestCandidate = currentSnapshotRef.current;
+        setStorageError(local.error ?? "");
+        try {
+          const cloud = await loadLatestCloudProject(client, userId);
+          if (cancelled) return;
+
+          const snapshot =
+            selectAccountSnapshot({
+              local: local.snapshot,
+              cloud,
+              guest: guestCandidate,
+            }) ?? createEmptyProjectSnapshot();
+
+          setStorageScope(userId);
+          activeAuthScopeRef.current = userId;
+          applySnapshot(snapshot);
+          const cached = saveProject(window.localStorage, snapshot, userId);
+          setStorageError(
+            !cached.ok
+              ? "本地空间不足，云端项目已加载但无法建立离线缓存。"
+              : cached.compacted
+                ? "本地空间接近上限，离线缓存仅保留当前成功版本。"
+                : "",
+          );
+          cloudReadyUserRef.current = userId;
+
+          if (!cloud || snapshot.savedAt !== cloud.savedAt) {
+            await saveCloudProject(client, userId, snapshot);
+          }
+          if (!cancelled) {
+            setCloudStatus("synced");
+            setCloudError("");
+          }
+        } catch (reason) {
+          if (cancelled) return;
+          cloudReadyUserRef.current = null;
+          if (local.snapshot) {
+            setStorageScope(userId);
+            activeAuthScopeRef.current = userId;
+            applySnapshot(local.snapshot);
+          } else {
+            setStorageScope("guest");
+            activeAuthScopeRef.current = "guest";
+          }
+          setCloudStatus("error");
+          setCloudError(
+            reason instanceof Error
+              ? `${reason.message}；当前修改仍保存在本机。`
+              : "云端同步失败；当前修改仍保存在本机。",
+          );
+        }
+      })();
+    } else if (activeAuthScopeRef.current !== "guest") {
+      cloudReadyUserRef.current = null;
+      activeAuthScopeRef.current = "guest";
+      setStorageScope("guest");
+      setCloudStatus("local");
+      setCloudError("");
+      const guest = loadProject(window.localStorage, "guest");
+      applySnapshot(guest.snapshot ?? createEmptyProjectSnapshot());
+      setStorageError(guest.error ?? "");
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    applySnapshot,
+    auth.client,
+    auth.status,
+    auth.user,
+    cloudRetryNonce,
+    hydrated,
+  ]);
+
+  useEffect(() => {
+    const retryWhenOnline = () => setCloudRetryNonce((value) => value + 1);
+    window.addEventListener("online", retryWhenOnline);
+    return () => window.removeEventListener("online", retryWhenOnline);
   }, []);
 
   useEffect(() => {
-    if (!hydrated || storageError) return;
-    const result = saveProject(window.localStorage, {
-      schemaVersion: 1,
+    if (!hydrated || !projectId || storageError) return;
+    const snapshot: ProjectSnapshot = {
+      schemaVersion: 2,
+      projectId,
       savedAt: new Date().toISOString(),
       prompt,
       mode,
@@ -208,7 +335,9 @@ export function BuilderWorkspace() {
       versions,
       lastError: error,
       briefRevision,
-    });
+    };
+    currentSnapshotRef.current = snapshot;
+    const result = saveProject(window.localStorage, snapshot, storageScope);
     if (!result.ok) {
       queueMicrotask(() =>
         setStorageError("本地空间不足，当前进度无法继续保存。"),
@@ -218,19 +347,59 @@ export function BuilderWorkspace() {
         setStorageError("本地空间接近上限，仅保留了当前成功版本。"),
       );
     }
+
+    if (
+      auth.status === "signed_in" &&
+      auth.user &&
+      auth.client &&
+      cloudReadyUserRef.current === auth.user.id
+    ) {
+      if (cloudSaveTimerRef.current) clearTimeout(cloudSaveTimerRef.current);
+      setCloudStatus("syncing");
+      const client = auth.client;
+      const userId = auth.user.id;
+      cloudSaveTimerRef.current = setTimeout(() => {
+        void saveCloudProject(client, userId, snapshot)
+          .then(() => {
+            setCloudStatus("synced");
+            setCloudError("");
+          })
+          .catch((reason: unknown) => {
+            cloudReadyUserRef.current = null;
+            setCloudStatus("error");
+            setCloudError(
+              reason instanceof Error
+                ? `${reason.message}；本地缓存仍然可用。`
+                : "云端同步失败；本地缓存仍然可用。",
+            );
+          });
+      }, 800);
+    }
+
+    return () => {
+      if (cloudSaveTimerRef.current) {
+        clearTimeout(cloudSaveTimerRef.current);
+        cloudSaveTimerRef.current = null;
+      }
+    };
   }, [
     activeVersionId,
+    auth.client,
+    auth.status,
+    auth.user,
     briefRevision,
     error,
     generatedApp,
     hydrated,
     mode,
     product,
+    projectId,
     prompt,
     providerLabel,
     runState,
     stages,
     storageError,
+    storageScope,
     technicalPlan,
     versions,
   ]);
@@ -394,6 +563,10 @@ export function BuilderWorkspace() {
       setError("请至少用 10 个字符描述你想创建的产品。");
       return;
     }
+    if (auth.status !== "unavailable" && auth.status !== "signed_in") {
+      setError("请先登录后再使用实时生成；预置成功项目仍可直接体验。");
+      return;
+    }
 
     const action = options.action ?? "initial";
     const isInitial = action === "initial";
@@ -448,14 +621,19 @@ export function BuilderWorkspace() {
     setCurrentProgress("正在建立安全的生成会话…");
     setError("");
     setStorageError("");
+    setCloudError("");
     setEditingBrief(false);
     setLastFailedStage(null);
     setLastFailureRetryable(false);
 
     try {
+      const headers = new Headers({ "Content-Type": "application/json" });
+      if (auth.accessToken) {
+        headers.set("Authorization", `Bearer ${auth.accessToken}`);
+      }
       const response = await fetch("/api/runs", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           protocolVersion: 1,
           runId: crypto.randomUUID(),
@@ -593,36 +771,17 @@ export function BuilderWorkspace() {
   };
 
   const resetLocalProject = () => {
-    clearProject(window.localStorage);
-    productRef.current = null;
-    technicalPlanRef.current = null;
-    generatedAppRef.current = null;
-    providerLabelRef.current = "尚未运行";
-    nextVersionRevisionRef.current = 1;
-    pendingVersionRef.current = null;
-    previousActiveVersionRef.current = null;
-    setPrompt(examples[0].prompt);
-    setMode("quick");
-    setRunState("idle");
-    setStages(initialStages());
-    setProviderLabel("尚未运行");
-    setEvents([]);
-    setProduct(null);
-    setTechnicalPlan(null);
-    setGeneratedApp(null);
-    setAcceptedHtml("");
-    setChecks([]);
-    setChannelToken("");
-    setVersions([]);
-    setActiveVersionId(null);
-    setBriefRevision(0);
-    setEditingBrief(false);
-    setRebuildPending(false);
-    setPreviewReady(false);
-    setPreviewInteraction(false);
-    setCurrentProgress("");
-    setError("");
+    clearProject(window.localStorage, storageScope);
     setStorageError("");
+    const current = currentSnapshotRef.current;
+    if (storageScope !== "guest" && current) {
+      const result = saveProject(window.localStorage, current, storageScope);
+      if (!result.ok) {
+        setStorageError("本地空间不足，无法重建缓存。");
+      }
+      return;
+    }
+    applySnapshot(createEmptyProjectSnapshot());
   };
 
   const downloadHtml = () => {
@@ -706,6 +865,12 @@ export function BuilderWorkspace() {
         <div className="topbar-meta">
           <span>idea → product</span>
           <span className="demo-chip">透明生成 Demo</span>
+          {auth.status === "signed_in" ? (
+            <span className={`cloud-chip ${cloudStatus}`}>
+              {cloudStatusLabel(cloudStatus)}
+            </span>
+          ) : null}
+          <AuthControls />
         </div>
       </header>
 
@@ -841,7 +1006,12 @@ export function BuilderWorkspace() {
                     onClick={() => void startRun()}
                     type="button"
                   >
-                    {mode === "guided" ? "生成 Product Brief ↗" : "开始生成 ↗"}
+                    {auth.status !== "unavailable" &&
+                    auth.status !== "signed_in"
+                      ? "登录后生成 ↗"
+                      : mode === "guided"
+                        ? "生成 Product Brief ↗"
+                        : "开始生成 ↗"}
                   </button>
                 )}
               </div>
@@ -878,7 +1048,18 @@ export function BuilderWorkspace() {
               <div className="storage-banner" role="alert">
                 <span>{storageError}</span>
                 <button onClick={resetLocalProject} type="button">
-                  重置本地数据
+                  {storageScope === "guest" ? "重置本地数据" : "重建本地缓存"}
+                </button>
+              </div>
+            )}
+            {cloudError && (
+              <div className="storage-banner cloud-warning" role="status">
+                <span>{cloudError}</span>
+                <button
+                  onClick={() => setCloudRetryNonce((value) => value + 1)}
+                  type="button"
+                >
+                  立即重试
                 </button>
               </div>
             )}
@@ -1221,4 +1402,33 @@ function markInterruptedStage(stages: Record<StageId, StageState>) {
       state === "running" ? "failed" : state,
     ]),
   ) as Record<StageId, StageState>;
+}
+
+function createEmptyProjectSnapshot(): ProjectSnapshot {
+  return {
+    schemaVersion: 2,
+    projectId: crypto.randomUUID(),
+    savedAt: new Date().toISOString(),
+    prompt: examples[0].prompt,
+    mode: "quick",
+    runState: "idle",
+    stages: initialStages(),
+    providerLabel: "尚未运行",
+    product: null,
+    technicalPlan: null,
+    generatedApp: null,
+    activeVersionId: null,
+    versions: [],
+    lastError: "",
+    briefRevision: 0,
+  };
+}
+
+function cloudStatusLabel(status: "local" | "syncing" | "synced" | "error") {
+  return {
+    local: "仅本地",
+    syncing: "云端同步中",
+    synced: "已同步",
+    error: "云端待重试",
+  }[status];
 }

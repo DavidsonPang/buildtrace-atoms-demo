@@ -3,6 +3,7 @@ import { authorizeLiveRun } from "@/src/lib/live-budget";
 import { ModelProviderError } from "@/src/lib/model-provider";
 import { runPipeline } from "@/src/lib/orchestrator";
 import { createConfiguredProvider } from "@/src/lib/provider-factory";
+import { authenticateRunRequest } from "@/src/lib/supabase-server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,12 +25,28 @@ export async function POST(request: Request) {
     );
   }
 
+  let identity;
+  try {
+    identity = await authenticateRunRequest(request);
+  } catch {
+    return Response.json(
+      { error: "身份服务暂时不可用，请稍后重试。" },
+      { status: 503 },
+    );
+  }
+  if (identity.authRequired && !identity.userId) {
+    return Response.json(
+      { error: "请先登录后再使用实时生成。" },
+      { status: 401 },
+    );
+  }
+
   let provider;
   try {
     provider = createConfiguredProvider();
     if (provider.id === "deepseek") {
       authorizeLiveRun({
-        sessionId: parsed.data.clientSessionId,
+        sessionId: identity.userId ?? parsed.data.clientSessionId,
         idempotencyKey: parsed.data.idempotencyKey,
       });
     }
