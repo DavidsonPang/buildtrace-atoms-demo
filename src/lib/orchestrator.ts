@@ -14,6 +14,12 @@ import {
 } from "@/src/lib/html-sandbox";
 
 const STEP_DELAY_MS = process.env.NODE_ENV === "test" ? 0 : 380;
+const STAGE_ORDER: StageId[] = [
+  "product",
+  "architecture",
+  "engineering",
+  "validation",
+];
 
 function wait(ms: number, signal: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
@@ -40,7 +46,11 @@ export async function* runPipeline(
 ): AsyncGenerator<RunEvent> {
   let sequence = 0;
   const runStartedAt = Date.now();
-  let currentStage: StageId = "product";
+  const resumeFrom =
+    request.retryFrom ?? request.rebuildFrom ?? ("product" as const);
+  const resumeIndex = STAGE_ORDER.indexOf(resumeFrom);
+  const effectivePrompt = composePrompt(request);
+  let currentStage: StageId = resumeFrom;
 
   const event = <T extends RunEvent>(
     value: Omit<T, "protocolVersion" | "runId" | "sequence" | "timestamp">,
@@ -76,66 +86,94 @@ export async function* runPipeline(
       payload: { providerLabel: provider.label, mode: request.mode },
     });
 
-    let startedAt = Date.now();
-    currentStage = "product";
-    yield startStage("product");
-    yield event<Extract<RunEvent, { type: "stage.progress" }>>({
-      type: "stage.progress",
-      stage: "product",
-      payload: { message: "正在识别核心用户、问题与关键假设…" },
-    });
-    if (provider.id === "fake") await wait(STEP_DELAY_MS, signal);
-    const product = await provider.generateProduct(request.prompt, signal);
-    yield event<Extract<RunEvent, { type: "artifact.completed" }>>({
-      type: "artifact.completed",
-      stage: "product",
-      payload: { kind: "product", artifact: product },
-    });
-    yield completeStage("product", startedAt);
+    let product = request.artifacts?.product;
+    let technicalPlan = request.artifacts?.technicalPlan;
+    let app = request.artifacts?.generatedApp;
+    let startedAt: number;
 
-    startedAt = Date.now();
-    currentStage = "architecture";
-    yield startStage("architecture");
-    yield event<Extract<RunEvent, { type: "stage.progress" }>>({
-      type: "stage.progress",
-      stage: "architecture",
-      payload: { message: "正在收敛交互模型、数据和组件边界…" },
-    });
-    if (provider.id === "fake") await wait(STEP_DELAY_MS, signal);
-    const technicalPlan = await provider.generateTechnicalPlan(
-      request.prompt,
-      product,
-      signal,
-    );
-    yield event<Extract<RunEvent, { type: "artifact.completed" }>>({
-      type: "artifact.completed",
-      stage: "architecture",
-      payload: { kind: "technical-plan", artifact: technicalPlan },
-    });
-    yield completeStage("architecture", startedAt);
+    if (resumeIndex <= 0) {
+      startedAt = Date.now();
+      currentStage = "product";
+      yield startStage("product");
+      yield event<Extract<RunEvent, { type: "stage.progress" }>>({
+        type: "stage.progress",
+        stage: "product",
+        payload: { message: "正在识别核心用户、问题与关键假设…" },
+      });
+      if (provider.id === "fake") await wait(STEP_DELAY_MS, signal);
+      product = await provider.generateProduct(effectivePrompt, signal);
+      yield event<Extract<RunEvent, { type: "artifact.completed" }>>({
+        type: "artifact.completed",
+        stage: "product",
+        payload: { kind: "product", artifact: product },
+      });
+      yield completeStage("product", startedAt);
 
-    startedAt = Date.now();
-    currentStage = "engineering";
-    yield startStage("engineering");
-    yield event<Extract<RunEvent, { type: "stage.progress" }>>({
-      type: "stage.progress",
-      stage: "engineering",
-      payload: { message: "正在生成自包含的交互式微型产品…" },
-    });
-    if (provider.id === "fake") await wait(STEP_DELAY_MS, signal);
-    const app = await provider.generateApp(
-      request.prompt,
-      product,
-      technicalPlan,
-      signal,
-    );
-    yield event<Extract<RunEvent, { type: "artifact.completed" }>>({
-      type: "artifact.completed",
-      stage: "engineering",
-      payload: { kind: "generated-app", artifact: app },
-    });
-    yield completeStage("engineering", startedAt);
+      if (request.mode === "guided") {
+        yield event<Extract<RunEvent, { type: "run.awaiting_user" }>>({
+          type: "run.awaiting_user",
+          stage: "product",
+          payload: {
+            reason: "product_review",
+            nextStage: "architecture",
+          },
+        });
+        return;
+      }
+    }
 
+    if (resumeIndex <= 1) {
+      if (!product) throw new Error("缺少已验证的 Product 产物。");
+      startedAt = Date.now();
+      currentStage = "architecture";
+      yield startStage("architecture");
+      yield event<Extract<RunEvent, { type: "stage.progress" }>>({
+        type: "stage.progress",
+        stage: "architecture",
+        payload: { message: "正在收敛交互模型、数据和组件边界…" },
+      });
+      if (provider.id === "fake") await wait(STEP_DELAY_MS, signal);
+      technicalPlan = await provider.generateTechnicalPlan(
+        effectivePrompt,
+        product,
+        signal,
+      );
+      yield event<Extract<RunEvent, { type: "artifact.completed" }>>({
+        type: "artifact.completed",
+        stage: "architecture",
+        payload: { kind: "technical-plan", artifact: technicalPlan },
+      });
+      yield completeStage("architecture", startedAt);
+    }
+
+    if (resumeIndex <= 2) {
+      if (!product || !technicalPlan) {
+        throw new Error("缺少已验证的上游产物。");
+      }
+      startedAt = Date.now();
+      currentStage = "engineering";
+      yield startStage("engineering");
+      yield event<Extract<RunEvent, { type: "stage.progress" }>>({
+        type: "stage.progress",
+        stage: "engineering",
+        payload: { message: "正在生成自包含的交互式微型产品…" },
+      });
+      if (provider.id === "fake") await wait(STEP_DELAY_MS, signal);
+      app = await provider.generateApp(
+        effectivePrompt,
+        product,
+        technicalPlan,
+        signal,
+      );
+      yield event<Extract<RunEvent, { type: "artifact.completed" }>>({
+        type: "artifact.completed",
+        stage: "engineering",
+        payload: { kind: "generated-app", artifact: app },
+      });
+      yield completeStage("engineering", startedAt);
+    }
+
+    if (!app) throw new Error("缺少已验证的生成应用产物。");
     startedAt = Date.now();
     currentStage = "validation";
     yield startStage("validation");
@@ -190,4 +228,22 @@ export async function* runPipeline(
       payload: { code, message, retryable },
     });
   }
+}
+
+function composePrompt(request: RunRequest) {
+  if (!request.context) return request.prompt;
+
+  const context = [
+    request.context.audience ? `补充目标用户：${request.context.audience}` : "",
+    request.context.primaryAction
+      ? `补充核心操作：${request.context.primaryAction}`
+      : "",
+    request.context.constraints?.length
+      ? `补充约束：${request.context.constraints.join("；")}`
+      : "",
+  ].filter(Boolean);
+
+  return context.length
+    ? `${request.prompt}\n\n${context.join("\n")}`
+    : request.prompt;
 }

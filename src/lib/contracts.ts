@@ -9,17 +9,13 @@ export const StageIdSchema = z.enum([
 
 export type StageId = z.infer<typeof StageIdSchema>;
 
-export const RunRequestSchema = z.object({
-  protocolVersion: z.literal(1),
-  runId: z.string().uuid(),
-  clientSessionId: z.string().uuid(),
-  idempotencyKey: z.string().min(16).max(128),
-  mode: z.enum(["quick", "guided"]),
-  action: z.enum(["initial", "continue", "retry", "rebuild"]),
-  prompt: z.string().trim().min(10).max(2_000),
+export const GuidedContextSchema = z.object({
+  audience: z.string().trim().max(300).optional(),
+  primaryAction: z.string().trim().max(300).optional(),
+  constraints: z.array(z.string().trim().max(200)).max(8).optional(),
 });
 
-export type RunRequest = z.infer<typeof RunRequestSchema>;
+export type GuidedContext = z.infer<typeof GuidedContextSchema>;
 
 export const IdeaAnalysisSchema = z.object({
   problem: z.string().min(20).max(800),
@@ -80,6 +76,86 @@ export const GeneratedAppSchema = z.object({
 
 export type GeneratedApp = z.infer<typeof GeneratedAppSchema>;
 
+export const ArtifactSnapshotSchema = z.object({
+  product: ProductAgentOutputSchema.optional(),
+  technicalPlan: TechnicalPlanSchema.optional(),
+  generatedApp: GeneratedAppSchema.optional(),
+});
+
+export type ArtifactSnapshot = z.infer<typeof ArtifactSnapshotSchema>;
+
+export const RunRequestSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    runId: z.string().uuid(),
+    clientSessionId: z.string().uuid(),
+    idempotencyKey: z.string().min(16).max(128),
+    mode: z.enum(["quick", "guided"]),
+    action: z.enum(["initial", "continue", "retry", "rebuild"]),
+    prompt: z.string().trim().min(10).max(2_000),
+    context: GuidedContextSchema.optional(),
+    retryFrom: StageIdSchema.optional(),
+    rebuildFrom: StageIdSchema.optional(),
+    artifacts: ArtifactSnapshotSchema.optional(),
+  })
+  .superRefine((request, context) => {
+    if (request.action === "initial") {
+      if (request.retryFrom || request.rebuildFrom || request.artifacts) {
+        context.addIssue({
+          code: "custom",
+          message: "Initial runs cannot include resume artifacts.",
+        });
+      }
+      return;
+    }
+
+    if (request.action === "rebuild" || request.action === "continue") {
+      if (
+        request.rebuildFrom !== "architecture" ||
+        !request.artifacts?.product
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Rebuilds require a validated product artifact.",
+        });
+      }
+      return;
+    }
+
+    if (!request.retryFrom) {
+      context.addIssue({
+        code: "custom",
+        message: "Retries require retryFrom.",
+      });
+      return;
+    }
+
+    const artifacts = request.artifacts;
+    if (request.retryFrom === "architecture" && !artifacts?.product) {
+      context.addIssue({
+        code: "custom",
+        message: "Architecture retries require the product artifact.",
+      });
+    }
+    if (
+      request.retryFrom === "engineering" &&
+      (!artifacts?.product || !artifacts.technicalPlan)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Engineering retries require product and technical artifacts.",
+      });
+    }
+    if (request.retryFrom === "validation" && !artifacts?.generatedApp) {
+      context.addIssue({
+        code: "custom",
+        message: "Validation retries require the generated app artifact.",
+      });
+    }
+  });
+
+export type RunRequest = z.infer<typeof RunRequestSchema>;
+
 export const ValidationCheckSchema = z.object({
   id: z.string(),
   label: z.string(),
@@ -88,6 +164,20 @@ export const ValidationCheckSchema = z.object({
 });
 
 export type ValidationCheck = z.infer<typeof ValidationCheckSchema>;
+
+export const PresetProjectSchema = z.object({
+  protocolVersion: z.literal(1),
+  source: z.literal("preset"),
+  prompt: z.string().min(10).max(2_000),
+  providerLabel: z.string().max(120),
+  product: ProductAgentOutputSchema,
+  technicalPlan: TechnicalPlanSchema,
+  generatedApp: GeneratedAppSchema,
+  acceptedHtml: z.string().min(300).max(150_000),
+  checks: z.array(ValidationCheckSchema).max(20),
+});
+
+export type PresetProject = z.infer<typeof PresetProjectSchema>;
 
 const BaseEventSchema = z.object({
   protocolVersion: z.literal(1),
@@ -152,6 +242,14 @@ export const RunEventSchema = z.discriminatedUnion("type", [
       code: z.string(),
       message: z.string(),
       retryable: z.boolean(),
+    }),
+  }),
+  BaseEventSchema.extend({
+    type: z.literal("run.awaiting_user"),
+    stage: z.literal("product"),
+    payload: z.object({
+      reason: z.literal("product_review"),
+      nextStage: z.literal("architecture"),
     }),
   }),
   BaseEventSchema.extend({
