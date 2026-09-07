@@ -83,6 +83,9 @@ describe("project store", () => {
     expect(loadProject(storage).snapshot?.activeVersionId).toBe(
       "b43ad55a-fefd-45e1-9c8d-90ce7db802c5",
     );
+    expect(loadProject(storage).snapshot?.versions[0].revisionInstruction).toBe(
+      "",
+    );
   });
 
   it("对损坏数据安全降级而不删除原始值", () => {

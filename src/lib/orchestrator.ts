@@ -98,7 +98,12 @@ export async function* runPipeline(
       yield event<Extract<RunEvent, { type: "stage.progress" }>>({
         type: "stage.progress",
         stage: "product",
-        payload: { message: "正在识别核心用户、问题与关键假设…" },
+        payload: {
+          message:
+            request.action === "revise"
+              ? "正在把修改要求合并到现有产品定义…"
+              : "正在识别核心用户、问题与关键假设…",
+        },
       });
       if (provider.id === "fake") await wait(STEP_DELAY_MS, signal);
       product = await provider.generateProduct(effectivePrompt, signal);
@@ -109,7 +114,7 @@ export async function* runPipeline(
       });
       yield completeStage("product", startedAt);
 
-      if (request.mode === "guided") {
+      if (request.mode === "guided" && request.action === "initial") {
         yield event<Extract<RunEvent, { type: "run.awaiting_user" }>>({
           type: "run.awaiting_user",
           stage: "product",
@@ -231,19 +236,25 @@ export async function* runPipeline(
 }
 
 function composePrompt(request: RunRequest) {
-  if (!request.context) return request.prompt;
-
   const context = [
-    request.context.audience ? `补充目标用户：${request.context.audience}` : "",
-    request.context.primaryAction
+    request.context?.audience
+      ? `补充目标用户：${request.context.audience}`
+      : "",
+    request.context?.primaryAction
       ? `补充核心操作：${request.context.primaryAction}`
       : "",
-    request.context.constraints?.length
+    request.context?.constraints?.length
       ? `补充约束：${request.context.constraints.join("；")}`
       : "",
   ].filter(Boolean);
 
-  return context.length
-    ? `${request.prompt}\n\n${context.join("\n")}`
-    : request.prompt;
+  const revision = request.revisionInstruction
+    ? [
+        `现有已验证产品简报：\n${JSON.stringify(request.artifacts?.product)}`,
+        `本轮修改要求：\n${request.revisionInstruction}`,
+        "请在保留未被修改要求否定的现有能力基础上，生成完整的新版本。",
+      ]
+    : [];
+
+  return [request.prompt, ...context, ...revision].filter(Boolean).join("\n\n");
 }

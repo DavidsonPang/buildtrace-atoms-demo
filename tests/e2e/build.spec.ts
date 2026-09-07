@@ -105,3 +105,33 @@ test("预置成功项目不调用模型即可进入可交互预览", async ({ pa
   ).toBeVisible();
   await expect(page.getByText("预览已就绪", { exact: true })).toBeVisible();
 });
+
+test("用自然语言生成新版本，并在虚拟文件树中切换源码", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator('main[data-hydrated="true"]')).toBeVisible();
+  await page
+    .getByRole("button", { name: "查看预置成功项目 · 零模型调用" })
+    .click();
+  await expect(page.getByText("预览已就绪", { exact: true })).toBeVisible();
+
+  const instruction = "增加税费说明，并保留现有报价计算能力。";
+  await page.getByLabel("后续修改要求").fill(instruction);
+  await page.getByRole("button", { name: "生成新版本" }).click();
+
+  const preview = page.frameLocator('iframe[title="生成产品预览"]');
+  await expect(preview.locator("#revision-request")).toContainText(instruction);
+  await expect(page.getByRole("button", { name: /v2/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /v1/ })).toBeVisible();
+
+  await page.getByRole("tab", { name: "代码" }).click();
+  await expect(page.getByText("虚拟文件视图", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "index.html" })).toBeVisible();
+  await page.getByRole("button", { name: "styles.css" }).click();
+  await expect(page.locator(".source-content .code-view")).toContainText(
+    "body",
+  );
+  await page.getByRole("button", { name: "app.js" }).click();
+  await expect(page.locator(".source-content .code-view")).toContainText(
+    "document",
+  );
+});

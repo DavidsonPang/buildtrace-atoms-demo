@@ -27,6 +27,7 @@ const CloudVersionRowSchema = z.object({
   id: z.string().uuid(),
   revision: z.number(),
   prompt: z.string(),
+  revision_instruction: z.string(),
   provider_label: z.string(),
   product: z.unknown(),
   technical_plan: z.unknown(),
@@ -79,6 +80,7 @@ export async function saveCloudProject(
     user_id: userId,
     revision: version.revision,
     prompt: version.prompt,
+    revision_instruction: version.revisionInstruction,
     provider_label: version.providerLabel,
     product: version.product,
     technical_plan: version.technicalPlan,
@@ -137,7 +139,7 @@ export async function loadLatestCloudProject(
   const { data: versionData, error: versionError } = await client
     .from("project_versions")
     .select(
-      "id,revision,prompt,provider_label,product,technical_plan,generated_app,accepted_html,checks,created_at",
+      "id,revision,prompt,revision_instruction,provider_label,product,technical_plan,generated_app,accepted_html,checks,created_at",
     )
     .eq("project_id", project.id)
     .eq("user_id", userId)
@@ -155,6 +157,7 @@ export async function loadLatestCloudProject(
         id: version.id,
         revision: version.revision,
         prompt: version.prompt,
+        revisionInstruction: version.revision_instruction,
         providerLabel: version.provider_label,
         product: version.product,
         technicalPlan: version.technical_plan,

@@ -42,6 +42,7 @@ export const ProjectVersionSchema = z.object({
   createdAt: z.string(),
   revision: z.number().int().positive(),
   prompt: z.string().min(10).max(2_000),
+  revisionInstruction: z.string().max(800).default(""),
   providerLabel: z.string().max(120),
   product: ProductAgentOutputSchema,
   technicalPlan: TechnicalPlanSchema,
@@ -218,6 +219,7 @@ export function selectAccountSnapshot(input: {
 export function createProjectVersion(input: {
   revision: number;
   prompt: string;
+  revisionInstruction?: string;
   providerLabel: string;
   product: ProductAgentOutput;
   technicalPlan: TechnicalPlan;

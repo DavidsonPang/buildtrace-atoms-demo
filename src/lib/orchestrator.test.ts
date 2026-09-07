@@ -137,6 +137,60 @@ describe("runFakePipeline", () => {
     ).toBe(false);
   });
 
+  it("把自然语言修改合并进完整流水线并生成可回溯的新产物", async () => {
+    const revisionInstruction = "增加税费说明，并保留现有报价计算能力。";
+    const reviseRequest = RunRequestSchema.parse({
+      ...request,
+      runId: "ebf5087e-d14a-4c7f-963d-94f4c859f30f",
+      idempotencyKey: "natural-language-revision-key",
+      mode: "guided",
+      action: "revise",
+      revisionInstruction,
+      artifacts: { product: createProductArtifacts(request.prompt) },
+    });
+    const events = [];
+
+    for await (const event of runPipeline(
+      reviseRequest,
+      new AbortController().signal,
+      new FakeModelProvider(),
+    )) {
+      events.push(RunEventSchema.parse(event));
+    }
+
+    expect(
+      events
+        .filter((event) => event.type === "stage.started")
+        .map((event) => event.stage),
+    ).toEqual(["product", "architecture", "engineering", "validation"]);
+    expect(events.some((event) => event.type === "run.awaiting_user")).toBe(
+      false,
+    );
+    const validation = events.find(
+      (event) => event.type === "validation.completed",
+    );
+    expect(validation?.payload.acceptedHtml).toContain("revision-request");
+    expect(validation?.payload.acceptedHtml).toContain(revisionInstruction);
+    expect(events.at(-1)?.type).toBe("run.completed");
+  });
+
+  it("拒绝没有修改要求或当前 Product 产物的迭代请求", () => {
+    expect(
+      RunRequestSchema.safeParse({
+        ...request,
+        action: "revise",
+        artifacts: { product: createProductArtifacts(request.prompt) },
+      }).success,
+    ).toBe(false);
+    expect(
+      RunRequestSchema.safeParse({
+        ...request,
+        action: "revise",
+        revisionInstruction: "增加税费说明",
+      }).success,
+    ).toBe(false);
+  });
+
   it("明确报告 Engineering 超时，并可复用上游产物只重试失败阶段", async () => {
     class EngineeringTimeoutProvider extends FakeModelProvider {
       override async generateApp(

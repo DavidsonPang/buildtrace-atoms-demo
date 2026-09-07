@@ -91,8 +91,9 @@ export const RunRequestSchema = z
     clientSessionId: z.string().uuid(),
     idempotencyKey: z.string().min(16).max(128),
     mode: z.enum(["quick", "guided"]),
-    action: z.enum(["initial", "continue", "retry", "rebuild"]),
+    action: z.enum(["initial", "continue", "retry", "rebuild", "revise"]),
     prompt: z.string().trim().min(10).max(2_000),
+    revisionInstruction: z.string().trim().min(3).max(800).optional(),
     context: GuidedContextSchema.optional(),
     retryFrom: StageIdSchema.optional(),
     rebuildFrom: StageIdSchema.optional(),
@@ -100,10 +101,31 @@ export const RunRequestSchema = z
   })
   .superRefine((request, context) => {
     if (request.action === "initial") {
-      if (request.retryFrom || request.rebuildFrom || request.artifacts) {
+      if (
+        request.retryFrom ||
+        request.rebuildFrom ||
+        request.revisionInstruction ||
+        request.artifacts
+      ) {
         context.addIssue({
           code: "custom",
           message: "Initial runs cannot include resume artifacts.",
+        });
+      }
+      return;
+    }
+
+    if (request.action === "revise") {
+      if (
+        !request.revisionInstruction ||
+        request.retryFrom ||
+        request.rebuildFrom ||
+        !request.artifacts?.product
+      ) {
+        context.addIssue({
+          code: "custom",
+          message:
+            "Revisions require an instruction and the current product artifact.",
         });
       }
       return;

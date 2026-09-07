@@ -84,6 +84,7 @@ export class DeepSeekProvider implements ModelProvider {
       [
         "你是产品 Agent。把用户的商业微型产品想法收敛为可验证的产品简报。",
         "所有内容使用简体中文。不要虚构外部调研事实；不确定内容写入 assumptions 或 risks。",
+        "如果输入包含现有产品简报和本轮修改要求，应保留未被否定的能力，把修改要求合并为完整的新 Product Brief，而不是只描述差异。",
         "功能需求必须使用 R1、R2… 前缀，验收标准必须使用 A1、A2… 前缀。",
         "范围必须适合一个自包含、无后端、无外部资源的单页交互应用。",
         "只返回符合给定 JSON Schema 的 JSON。",

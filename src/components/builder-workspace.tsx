@@ -30,6 +30,10 @@ import {
   type ProjectSnapshot,
   type ProjectVersion,
 } from "@/src/lib/project-store";
+import {
+  splitSelfContainedHtml,
+  type VirtualSourceFile,
+} from "@/src/lib/source-files";
 
 import { AuthControls, useAuth } from "./auth-provider";
 import { ProductBriefEditor } from "./product-brief-editor";
@@ -55,9 +59,10 @@ type RunState =
   | "retrying";
 
 type StartRunOptions = {
-  action?: "initial" | "retry" | "rebuild";
+  action?: "initial" | "retry" | "rebuild" | "revise";
   retryFrom?: StageId;
   rebuildFrom?: "architecture";
+  revisionInstruction?: string;
 };
 
 const stageOrder: StageId[] = [
@@ -132,6 +137,9 @@ export function BuilderWorkspace() {
     "local" | "syncing" | "synced" | "error"
   >("local");
   const [cloudRetryNonce, setCloudRetryNonce] = useState(0);
+  const [revisionInstruction, setRevisionInstruction] = useState("");
+  const [activeSourceFile, setActiveSourceFile] =
+    useState<VirtualSourceFile["name"]>("index.html");
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string>("");
@@ -147,6 +155,7 @@ export function BuilderWorkspace() {
   const activeAuthScopeRef = useRef("guest");
   const cloudReadyUserRef = useRef<string | null>(null);
   const cloudSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const revisionInstructionRef = useRef("");
 
   const applySnapshot = useCallback((snapshot: ProjectSnapshot) => {
     const interrupted = isInterruptedState(snapshot.runState);
@@ -186,6 +195,8 @@ export function BuilderWorkspace() {
     setCurrentProgress("");
     setEditingBrief(false);
     setRebuildPending(false);
+    setRevisionInstruction("");
+    setActiveSourceFile("index.html");
 
     productRef.current = snapshot.product;
     technicalPlanRef.current = snapshot.technicalPlan;
@@ -196,6 +207,7 @@ export function BuilderWorkspace() {
     previousActiveVersionRef.current = activeVersion ?? null;
     pendingVersionRef.current = null;
     currentSnapshotRef.current = snapshot;
+    revisionInstructionRef.current = "";
   }, []);
 
   useEffect(() => {
@@ -411,6 +423,19 @@ export function BuilderWorkspace() {
         : "",
     [acceptedHtml, channelToken],
   );
+  const activeSuccessfulVersion =
+    versions.find((version) => version.id === activeVersionId) ??
+    versions.at(-1);
+  const sourceFiles = useMemo(
+    () =>
+      activeSuccessfulVersion
+        ? splitSelfContainedHtml(activeSuccessfulVersion.generatedApp.html)
+        : [],
+    [activeSuccessfulVersion],
+  );
+  const selectedSourceFile =
+    sourceFiles.find((file) => file.name === activeSourceFile) ??
+    sourceFiles[0];
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -429,6 +454,7 @@ export function BuilderWorkspace() {
           setActiveVersionId(pendingVersion.id);
           previousActiveVersionRef.current = pendingVersion;
           pendingVersionRef.current = null;
+          setRevisionInstruction("");
         }
         setPreviewReady(true);
         setRunState("ready");
@@ -521,6 +547,7 @@ export function BuilderWorkspace() {
           generatedApp: appArtifact,
           acceptedHtml: event.payload.acceptedHtml,
           checks: event.payload.checks,
+          revisionInstruction: revisionInstructionRef.current,
         });
         pendingVersionRef.current = version;
       }
@@ -570,18 +597,41 @@ export function BuilderWorkspace() {
 
     const action = options.action ?? "initial";
     const isInitial = action === "initial";
+    const normalizedRevisionInstruction =
+      action === "revise"
+        ? (options.revisionInstruction?.trim() ?? "")
+        : action === "retry"
+          ? revisionInstructionRef.current
+          : "";
+    if (action === "revise") {
+      if (normalizedRevisionInstruction.length < 3) {
+        setError("请至少用 3 个字符描述本轮修改要求。");
+        return;
+      }
+      if (!productRef.current || !activeVersionId) {
+        setError("请先生成或加载一个成功版本，再继续迭代。");
+        return;
+      }
+    }
     const resumeFrom = options.retryFrom ?? options.rebuildFrom;
     const artifacts: ArtifactSnapshot | undefined = isInitial
       ? undefined
-      : {
-          product: productRef.current ?? undefined,
-          technicalPlan: technicalPlanRef.current ?? undefined,
-          generatedApp: generatedAppRef.current ?? undefined,
-        };
+      : action === "revise"
+        ? { product: productRef.current ?? undefined }
+        : {
+            product: productRef.current ?? undefined,
+            technicalPlan: technicalPlanRef.current ?? undefined,
+            generatedApp: generatedAppRef.current ?? undefined,
+          };
 
     const controller = new AbortController();
     abortRef.current = controller;
     runPromptRef.current = normalizedPrompt;
+    if (action === "revise") {
+      revisionInstructionRef.current = normalizedRevisionInstruction;
+    } else if (action !== "retry") {
+      revisionInstructionRef.current = "";
+    }
     previousActiveVersionRef.current =
       versions.find((version) => version.id === activeVersionId) ??
       versions.at(-1) ??
@@ -590,9 +640,11 @@ export function BuilderWorkspace() {
     setRunState(
       action === "rebuild"
         ? "rebuilding"
-        : action === "retry"
-          ? "retrying"
-          : "running",
+        : action === "revise"
+          ? "rebuilding"
+          : action === "retry"
+            ? "retrying"
+            : "running",
     );
     setStages((current) =>
       isInitial
@@ -645,6 +697,7 @@ export function BuilderWorkspace() {
           context: isInitial && mode === "guided" ? guidedContext() : undefined,
           retryFrom: options.retryFrom,
           rebuildFrom: options.rebuildFrom,
+          revisionInstruction: normalizedRevisionInstruction || undefined,
           artifacts,
         }),
         signal: controller.signal,
@@ -767,6 +820,9 @@ export function BuilderWorkspace() {
     setRunState("previewing");
     setEditingBrief(false);
     setRebuildPending(false);
+    setRevisionInstruction("");
+    setActiveSourceFile("index.html");
+    revisionInstructionRef.current = "";
     setError("");
   };
 
@@ -844,6 +900,9 @@ export function BuilderWorkspace() {
       setPreviewInteraction(false);
       setRebuildPending(false);
       setEditingBrief(false);
+      setRevisionInstruction("");
+      setActiveSourceFile("index.html");
+      revisionInstructionRef.current = "";
       setRunState("previewing");
       setCurrentProgress("预置项目已通过服务端确定性验证，正在启动预览…");
     } catch (reason) {
@@ -1036,6 +1095,47 @@ export function BuilderWorkspace() {
                 查看预置成功项目 · 零模型调用
               </button>
             </div>
+            {activeVersionId && acceptedHtml ? (
+              <div className="revision-composer">
+                <div className="revision-heading">
+                  <div>
+                    <strong>继续迭代当前版本</strong>
+                    <p>
+                      用自然语言描述改动；新版本成功前，当前预览不会被覆盖。
+                    </p>
+                  </div>
+                  <span>next · v{(versions.at(-1)?.revision ?? 0) + 1}</span>
+                </div>
+                <textarea
+                  aria-label="后续修改要求"
+                  disabled={isRunning}
+                  maxLength={800}
+                  onChange={(event) =>
+                    setRevisionInstruction(event.target.value)
+                  }
+                  placeholder="例如：保留现有报价流程，增加税费说明，并把结果卡片改成深色主题。"
+                  value={revisionInstruction}
+                />
+                <div className="revision-actions">
+                  <small>{revisionInstruction.length} / 800</small>
+                  <button
+                    className="build-button"
+                    disabled={
+                      isRunning || revisionInstruction.trim().length < 3
+                    }
+                    onClick={() =>
+                      void startRun({
+                        action: "revise",
+                        revisionInstruction,
+                      })
+                    }
+                    type="button"
+                  >
+                    生成新版本 ↗
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="activity" aria-live="polite">
@@ -1277,9 +1377,54 @@ export function BuilderWorkspace() {
               </div>
             )}
             {activeTab === "code" && (
-              <pre className="panel-surface code-view">
-                {acceptedHtml || "// 生成并通过验证后，代码将在这里显示。"}
-              </pre>
+              <div className="panel-surface source-explorer">
+                {selectedSourceFile ? (
+                  <>
+                    <aside className="source-sidebar" aria-label="虚拟文件列表">
+                      <div className="source-sidebar-heading">
+                        <strong>虚拟文件视图</strong>
+                        <span>展示拆分 · 运行仍为单 HTML</span>
+                      </div>
+                      {sourceFiles.map((file) => (
+                        <button
+                          className={
+                            activeSourceFile === file.name ? "active" : ""
+                          }
+                          key={file.name}
+                          onClick={() => setActiveSourceFile(file.name)}
+                          type="button"
+                        >
+                          <span aria-hidden="true">
+                            {file.name === "index.html"
+                              ? "◇"
+                              : file.name === "styles.css"
+                                ? "#"
+                                : "JS"}
+                          </span>
+                          {file.name}
+                        </button>
+                      ))}
+                    </aside>
+                    <section className="source-content">
+                      <header>
+                        <strong>{selectedSourceFile.name}</strong>
+                        <span>
+                          {selectedSourceFile.language} ·{" "}
+                          {selectedSourceFile.content.split("\n").length} 行
+                        </span>
+                      </header>
+                      <pre className="code-view">
+                        {selectedSourceFile.content}
+                      </pre>
+                    </section>
+                  </>
+                ) : (
+                  <div className="source-empty">
+                    生成并通过验证后，可在这里查看 index.html、styles.css 和
+                    app.js。
+                  </div>
+                )}
+              </div>
             )}
             {activeTab === "logs" && (
               <div className="panel-surface">
