@@ -1,8 +1,8 @@
 # BuildTrace 验证报告
 
 > 日期：2026-09-07
-> 范围：本地端到端纵向切片、DeepSeek V4 Flash Provider Spike 与五场景评测
-> 结论：本地核心生成链路通过；真实模型场景 4/5 成功，达到 PRD 的最低验收线；远程部署尚未执行。
+> 范围：本地端到端纵向切片、DeepSeek V4 Flash Provider Spike、五场景评测与 Vercel 生产部署
+> 结论：本地核心生成链路通过；真实模型场景 4/5 成功，达到 PRD 的最低验收线；生产环境真实 Pipeline 与平台限流均已验证。
 
 ## 1. 验证口径
 
@@ -86,15 +86,56 @@ D3 确认预算上限为 ¥10。本地实现包括：
 - 同一幂等键重试不重复占用运行次数。
 - 结构化产物最多进行一次受限修复。
 
-这些计数目前保存在进程内，重启后会清零，因此不能作为公共部署的唯一保护。D4 前需要确认 DeepSeek 账户侧额度/告警和远程共享限流方案。
+这些计数目前保存在进程内，重启后会清零，因此不能作为公共部署的唯一保护。生产环境额外启用了 Vercel WAF 固定窗口限流，DeepSeek 账户额度仍是最终费用边界。
 
-## 6. 已知限制与下一步
+## 6. 生产部署验证
+
+### 6.1 部署配置
+
+- 平台：Vercel Hobby；项目通过本地 CLI 部署，不连接 GitHub。
+- 生产地址：<https://buildtrace-atoms-demo-xi.vercel.app>。
+- Function：Fluid Compute；平台时长上限 300 秒，Route 声明 `maxDuration = 180`。
+- Secret：`DEEPSEEK_API_KEY` 仅由候选人在 Vercel Dashboard 配置为 Production Secret；验证只读取变量名称和类型，没有回读值。
+- 上传边界：`.env*`、`.internal/`、内部执行计划、根目录文本材料、依赖、构建和测试产物均被 `.vercelignore` 排除。
+
+### 6.2 在线真实生成
+
+生产环境使用“独立开发者专注时段与本周趋势”提示词执行一次 Quick Pipeline：
+
+| 检查         | 结果                           |
+| ------------ | ------------------------------ |
+| 首页访问     | HTTP 200                       |
+| Provider     | `DeepSeek · deepseek-v4-flash` |
+| Product      | 产物完成                       |
+| Architecture | 产物完成                       |
+| Engineering  | 产物完成                       |
+| Validation   | 确定性验证完成                 |
+| 整体结果     | `run.completed`                |
+| 总耗时       | 78,791 ms                      |
+
+事件流在 Vercel Route Handler 上保持 Product → Architecture → Engineering → Validation 的顺序，证明长请求、NDJSON、运行时 Schema 和生产 Secret 已真实贯通。
+
+### 6.3 平台限流
+
+生产 Firewall 规则 `Protect DeepSeek generation`：
+
+```text
+path equals /api/runs
+rate limit = 3 requests / 600 seconds
+algorithm = fixed window
+key = IP
+exceeded action = rate_limit (HTTP 429)
+```
+
+为避免额外模型费用，使用无法通过请求 Schema 的空 JSON 连续测试。四次响应依次为 `400、400、400、429`：前三次到达应用校验层，第四次由边缘限流拦截。规则状态为 Enabled，且已发布至生产配置。
+
+## 7. 已知限制与下一步
 
 - ROI 场景没有在 75 秒新上限下重复验证，保留为真实失败样本。
 - 当前重试会重新执行完整 Pipeline；按失败阶段复用已完成上游产物尚待后续实现。
 - 浏览器项目持久化、Brief 编辑与下游失效重建尚未实现。
-- 没有远程部署证据，NDJSON 在目标平台的代理/Serverless 行为尚未验证。
+- 线上只执行了一次完整真实生成，不能据此推断长期可用性或所有提示词表现。
 - 没有把 Provider 用量暴露给客户端；费用应以 DeepSeek 控制台账单为最终依据。
-- 内存次数与费用计数不是分布式配额，公共 Demo 需要更强的外部保护或关闭匿名实时生成。
+- 内存次数与费用计数不是分布式配额；当前 WAF 限制单 IP 频率，但不能替代用户级配额。
 
-下一步先进入 D4 部署决策；未经确认不创建远程项目、环境变量或公开地址。
+下一步进入核心 Agent Pipeline 与差异化能力收口；GitHub 公开仍受 D5 决策控制。

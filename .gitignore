@@ -20,3 +20,4 @@ test-results/
 .internal/
 docs/00-execution-plan.md
 /*.txt
+.vercel
