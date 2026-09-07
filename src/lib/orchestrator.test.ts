@@ -145,6 +145,10 @@ describe("runFakePipeline", () => {
         _technicalPlan: TechnicalPlan,
         _signal: AbortSignal,
       ): Promise<GeneratedApp> {
+        void _prompt;
+        void _product;
+        void _technicalPlan;
+        void _signal;
         throw new ModelProviderError(
           "provider_timeout",
           "工程阶段测试超时。",
@@ -161,9 +165,7 @@ describe("runFakePipeline", () => {
     )) {
       failedEvents.push(RunEventSchema.parse(event));
     }
-    const failure = failedEvents.find(
-      (event) => event.type === "stage.failed",
-    );
+    const failure = failedEvents.find((event) => event.type === "stage.failed");
     expect(failure).toMatchObject({
       type: "stage.failed",
       stage: "engineering",

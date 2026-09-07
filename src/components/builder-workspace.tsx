@@ -4,8 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   RunEventSchema,
+  PresetProjectSchema,
   STAGE_META,
+  type ArtifactSnapshot,
   type GeneratedApp,
+  type GuidedContext,
   type ProductAgentOutput,
   type RunEvent,
   type StageId,
@@ -13,11 +16,42 @@ import {
   type ValidationCheck,
 } from "@/src/lib/contracts";
 import { CHANNEL_TOKEN_PLACEHOLDER } from "@/src/lib/html-sandbox";
+import {
+  MAX_STORED_VERSIONS,
+  clearProject,
+  createProjectVersion,
+  loadProject,
+  saveProject,
+  type ProjectVersion,
+} from "@/src/lib/project-store";
 
-type StageState = "queued" | "running" | "completed" | "failed" | "ready";
+import { ProductBriefEditor } from "./product-brief-editor";
+
+type StageState =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "stale"
+  | "cancelled"
+  | "ready";
 type InspectorTab = "preview" | "code" | "logs" | "validation";
 type RunState =
-  "idle" | "running" | "previewing" | "ready" | "failed" | "cancelled";
+  | "idle"
+  | "running"
+  | "awaiting_user"
+  | "previewing"
+  | "ready"
+  | "failed"
+  | "cancelled"
+  | "rebuilding"
+  | "retrying";
+
+type StartRunOptions = {
+  action?: "initial" | "retry" | "rebuild";
+  retryFrom?: StageId;
+  rebuildFrom?: "architecture";
+};
 
 const stageOrder: StageId[] = [
   "product",
@@ -54,6 +88,9 @@ const initialStages = (): Record<StageId, StageState> => ({
 export function BuilderWorkspace() {
   const [prompt, setPrompt] = useState(examples[0].prompt);
   const [mode, setMode] = useState<"quick" | "guided">("quick");
+  const [guidedAudience, setGuidedAudience] = useState("");
+  const [guidedPrimaryAction, setGuidedPrimaryAction] = useState("");
+  const [guidedConstraints, setGuidedConstraints] = useState("");
   const [runState, setRunState] = useState<RunState>("idle");
   const [stages, setStages] = useState(initialStages);
   const [currentProgress, setCurrentProgress] = useState("");
@@ -71,17 +108,132 @@ export function BuilderWorkspace() {
   const [previewReady, setPreviewReady] = useState(false);
   const [previewInteraction, setPreviewInteraction] = useState(false);
   const [error, setError] = useState("");
+  const [storageError, setStorageError] = useState("");
+  const [hydrated, setHydrated] = useState(false);
+  const [editingBrief, setEditingBrief] = useState(false);
+  const [rebuildPending, setRebuildPending] = useState(false);
+  const [lastFailedStage, setLastFailedStage] = useState<StageId | null>(null);
+  const [lastFailureRetryable, setLastFailureRetryable] = useState(false);
+  const [versions, setVersions] = useState<ProjectVersion[]>([]);
+  const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
+  const [briefRevision, setBriefRevision] = useState(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string>("");
+  const productRef = useRef<ProductAgentOutput | null>(null);
+  const technicalPlanRef = useRef<TechnicalPlan | null>(null);
+  const generatedAppRef = useRef<GeneratedApp | null>(null);
+  const providerLabelRef = useRef("尚未运行");
+  const runPromptRef = useRef(prompt);
+  const nextVersionRevisionRef = useRef(1);
+  const pendingVersionRef = useRef<ProjectVersion | null>(null);
+  const previousActiveVersionRef = useRef<ProjectVersion | null>(null);
 
   useEffect(() => {
-    const storageKey = "buildtrace-client-session-id";
-    const existing = window.sessionStorage.getItem(storageKey);
+    let cancelled = false;
+    const sessionStorageKey = "buildtrace-client-session-id";
+    const existing = window.sessionStorage.getItem(sessionStorageKey);
     const sessionId = existing ?? crypto.randomUUID();
-    window.sessionStorage.setItem(storageKey, sessionId);
+    window.sessionStorage.setItem(sessionStorageKey, sessionId);
     sessionIdRef.current = sessionId;
+
+    const restored = loadProject(window.localStorage);
+    queueMicrotask(() => {
+      if (cancelled) return;
+      if (restored.error) setStorageError(restored.error);
+      if (restored.snapshot) {
+        const snapshot = restored.snapshot;
+        const interrupted = isInterruptedState(snapshot.runState);
+        const restoredStages = interrupted
+          ? markInterruptedStage(snapshot.stages)
+          : snapshot.stages;
+        const activeVersion =
+          snapshot.versions.find(
+            (version) => version.id === snapshot.activeVersionId,
+          ) ?? snapshot.versions.at(-1);
+
+        setPrompt(snapshot.prompt || examples[0].prompt);
+        setMode(snapshot.mode);
+        setRunState(interrupted ? "failed" : snapshot.runState);
+        setStages(restoredStages);
+        setProviderLabel(snapshot.providerLabel);
+        setProduct(snapshot.product);
+        setTechnicalPlan(snapshot.technicalPlan);
+        setGeneratedApp(snapshot.generatedApp);
+        setVersions(snapshot.versions);
+        setActiveVersionId(activeVersion?.id ?? null);
+        setBriefRevision(snapshot.briefRevision);
+        setError(
+          interrupted
+            ? "上一次生成在页面刷新时中断；已保留有效产物和最近成功预览。"
+            : snapshot.lastError,
+        );
+        setAcceptedHtml(activeVersion?.acceptedHtml ?? "");
+        setChecks(activeVersion?.checks ?? []);
+        if (activeVersion) {
+          setChannelToken(crypto.randomUUID().replaceAll("-", ""));
+        }
+
+        productRef.current = snapshot.product;
+        technicalPlanRef.current = snapshot.technicalPlan;
+        generatedAppRef.current = snapshot.generatedApp;
+        providerLabelRef.current = snapshot.providerLabel;
+        nextVersionRevisionRef.current =
+          Math.max(0, ...snapshot.versions.map((version) => version.revision)) +
+          1;
+        previousActiveVersionRef.current = activeVersion ?? null;
+      }
+      setHydrated(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!hydrated || storageError) return;
+    const result = saveProject(window.localStorage, {
+      schemaVersion: 1,
+      savedAt: new Date().toISOString(),
+      prompt,
+      mode,
+      runState,
+      stages,
+      providerLabel,
+      product,
+      technicalPlan,
+      generatedApp,
+      activeVersionId,
+      versions,
+      lastError: error,
+      briefRevision,
+    });
+    if (!result.ok) {
+      queueMicrotask(() =>
+        setStorageError("本地空间不足，当前进度无法继续保存。"),
+      );
+    } else if (result.compacted) {
+      queueMicrotask(() =>
+        setStorageError("本地空间接近上限，仅保留了当前成功版本。"),
+      );
+    }
+  }, [
+    activeVersionId,
+    briefRevision,
+    error,
+    generatedApp,
+    hydrated,
+    mode,
+    product,
+    prompt,
+    providerLabel,
+    runState,
+    stages,
+    storageError,
+    technicalPlan,
+    versions,
+  ]);
 
   const previewHtml = useMemo(
     () =>
@@ -100,6 +252,15 @@ export function BuilderWorkspace() {
         return;
 
       if (data.type === "ready") {
+        const pendingVersion = pendingVersionRef.current;
+        if (pendingVersion) {
+          setVersions((current) =>
+            [...current, pendingVersion].slice(-MAX_STORED_VERSIONS),
+          );
+          setActiveVersionId(pendingVersion.id);
+          previousActiveVersionRef.current = pendingVersion;
+          pendingVersionRef.current = null;
+        }
         setPreviewReady(true);
         setRunState("ready");
         setCurrentProgress("");
@@ -108,7 +269,28 @@ export function BuilderWorkspace() {
       if (data.type === "interaction") setPreviewInteraction(true);
       if (data.type === "error") {
         const payload = data.payload as { message?: unknown } | undefined;
-        setError(`预览运行错误：${String(payload?.message ?? "未知错误")}`);
+        const message = `预览运行错误：${String(payload?.message ?? "未知错误")}`;
+        setError(message);
+        setRunState("failed");
+        setStages((current) => ({ ...current, validation: "failed" }));
+        setChecks((current) => [
+          ...current.filter((check) => check.id !== "preview-runtime"),
+          {
+            id: "preview-runtime",
+            label: "预览运行时",
+            status: "failure",
+            detail: message,
+          },
+        ]);
+
+        const previousVersion = previousActiveVersionRef.current;
+        if (pendingVersionRef.current && previousVersion) {
+          setAcceptedHtml(previousVersion.acceptedHtml);
+          setChecks(previousVersion.checks);
+          setActiveVersionId(previousVersion.id);
+          setChannelToken(crypto.randomUUID().replaceAll("-", ""));
+        }
+        pendingVersionRef.current = null;
       }
     };
 
@@ -121,6 +303,9 @@ export function BuilderWorkspace() {
 
     if (event.type === "run.accepted") {
       setProviderLabel(event.payload.providerLabel);
+      providerLabelRef.current = event.payload.providerLabel;
+      setLastFailedStage(null);
+      setLastFailureRetryable(false);
     }
     if (event.type === "stage.started") {
       setStages((current) => ({ ...current, [event.stage]: "running" }));
@@ -129,11 +314,19 @@ export function BuilderWorkspace() {
       setCurrentProgress(event.payload.message);
     }
     if (event.type === "artifact.completed") {
-      if (event.payload.kind === "product") setProduct(event.payload.artifact);
-      if (event.payload.kind === "technical-plan")
+      if (event.payload.kind === "product") {
+        productRef.current = event.payload.artifact;
+        setProduct(event.payload.artifact);
+        setBriefRevision((current) => Math.max(1, current));
+      }
+      if (event.payload.kind === "technical-plan") {
+        technicalPlanRef.current = event.payload.artifact;
         setTechnicalPlan(event.payload.artifact);
-      if (event.payload.kind === "generated-app")
+      }
+      if (event.payload.kind === "generated-app") {
+        generatedAppRef.current = event.payload.artifact;
         setGeneratedApp(event.payload.artifact);
+      }
     }
     if (event.type === "stage.completed") {
       setStages((current) => ({ ...current, [event.stage]: "completed" }));
@@ -144,12 +337,37 @@ export function BuilderWorkspace() {
       setChannelToken(crypto.randomUUID().replaceAll("-", ""));
       setPreviewReady(false);
       setActiveTab("preview");
+      setRebuildPending(false);
+
+      const productArtifact = productRef.current;
+      const technicalArtifact = technicalPlanRef.current;
+      const appArtifact = generatedAppRef.current;
+      if (productArtifact && technicalArtifact && appArtifact) {
+        const version = createProjectVersion({
+          revision: nextVersionRevisionRef.current++,
+          prompt: runPromptRef.current,
+          providerLabel: providerLabelRef.current,
+          product: productArtifact,
+          technicalPlan: technicalArtifact,
+          generatedApp: appArtifact,
+          acceptedHtml: event.payload.acceptedHtml,
+          checks: event.payload.checks,
+        });
+        pendingVersionRef.current = version;
+      }
     }
     if (event.type === "stage.failed") {
       setStages((current) => ({ ...current, [event.stage]: "failed" }));
       setError(`${event.payload.code}：${event.payload.message}`);
       setRunState("failed");
       setCurrentProgress("");
+      setLastFailedStage(event.stage);
+      setLastFailureRetryable(event.payload.retryable);
+    }
+    if (event.type === "run.awaiting_user") {
+      setRunState("awaiting_user");
+      setCurrentProgress("Product Brief 已生成，请检查或编辑后开始构建。");
+      setEditingBrief(true);
     }
     if (event.type === "run.completed") {
       setRunState("previewing");
@@ -158,31 +376,81 @@ export function BuilderWorkspace() {
     if (event.type === "run.cancelled") {
       setRunState("cancelled");
       setCurrentProgress("");
+      setStages(
+        (current) =>
+          Object.fromEntries(
+            Object.entries(current).map(([stage, state]) => [
+              stage,
+              state === "running" ? "cancelled" : state,
+            ]),
+          ) as Record<StageId, StageState>,
+      );
     }
   }, []);
 
-  const startRun = async () => {
+  const startRun = async (options: StartRunOptions = {}) => {
     const normalizedPrompt = prompt.trim();
     if (normalizedPrompt.length < 10) {
       setError("请至少用 10 个字符描述你想创建的产品。");
       return;
     }
 
+    const action = options.action ?? "initial";
+    const isInitial = action === "initial";
+    const resumeFrom = options.retryFrom ?? options.rebuildFrom;
+    const artifacts: ArtifactSnapshot | undefined = isInitial
+      ? undefined
+      : {
+          product: productRef.current ?? undefined,
+          technicalPlan: technicalPlanRef.current ?? undefined,
+          generatedApp: generatedAppRef.current ?? undefined,
+        };
+
     const controller = new AbortController();
     abortRef.current = controller;
-    setRunState("running");
-    setStages(initialStages());
+    runPromptRef.current = normalizedPrompt;
+    previousActiveVersionRef.current =
+      versions.find((version) => version.id === activeVersionId) ??
+      versions.at(-1) ??
+      null;
+    pendingVersionRef.current = null;
+    setRunState(
+      action === "rebuild"
+        ? "rebuilding"
+        : action === "retry"
+          ? "retrying"
+          : "running",
+    );
+    setStages((current) =>
+      isInitial
+        ? initialStages()
+        : prepareStagesForResume(current, resumeFrom ?? "product"),
+    );
     setEvents([]);
-    setProduct(null);
-    setTechnicalPlan(null);
-    setGeneratedApp(null);
-    setAcceptedHtml("");
-    setChecks([]);
-    setChannelToken("");
-    setPreviewReady(false);
-    setPreviewInteraction(false);
+    if (isInitial) {
+      setProduct(null);
+      setTechnicalPlan(null);
+      setGeneratedApp(null);
+      setAcceptedHtml("");
+      setChecks([]);
+      setChannelToken("");
+      setPreviewReady(false);
+      setPreviewInteraction(false);
+      setActiveVersionId(null);
+      setVersions([]);
+      setBriefRevision(0);
+      setRebuildPending(false);
+      productRef.current = null;
+      technicalPlanRef.current = null;
+      generatedAppRef.current = null;
+      nextVersionRevisionRef.current = 1;
+    }
     setCurrentProgress("正在建立安全的生成会话…");
     setError("");
+    setStorageError("");
+    setEditingBrief(false);
+    setLastFailedStage(null);
+    setLastFailureRetryable(false);
 
     try {
       const response = await fetch("/api/runs", {
@@ -194,14 +462,20 @@ export function BuilderWorkspace() {
           clientSessionId: sessionIdRef.current || crypto.randomUUID(),
           idempotencyKey: crypto.randomUUID(),
           mode,
-          action: "initial",
+          action,
           prompt: normalizedPrompt,
+          context: isInitial && mode === "guided" ? guidedContext() : undefined,
+          retryFrom: options.retryFrom,
+          rebuildFrom: options.rebuildFrom,
+          artifacts,
         }),
         signal: controller.signal,
       });
 
       if (!response.ok) {
-        const body = (await response.json()) as { error?: string };
+        const body = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
         throw new Error(body.error ?? `请求失败（${response.status}）`);
       }
       if (!response.body) throw new Error("浏览器未收到事件流。");
@@ -209,6 +483,7 @@ export function BuilderWorkspace() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let receivedTerminalEvent = false;
 
       while (true) {
         const { value, done } = await reader.read();
@@ -221,9 +496,20 @@ export function BuilderWorkspace() {
           const parsed = RunEventSchema.safeParse(JSON.parse(line));
           if (!parsed.success)
             throw new Error("收到无法识别的事件，已停止更新界面。");
+          if (
+            parsed.data.type === "run.completed" ||
+            parsed.data.type === "run.cancelled" ||
+            parsed.data.type === "run.awaiting_user" ||
+            parsed.data.type === "stage.failed"
+          ) {
+            receivedTerminalEvent = true;
+          }
           handleEvent(parsed.data);
         }
         if (done) break;
+      }
+      if (!receivedTerminalEvent) {
+        throw new Error("事件流提前中断；已保留收到的有效产物。");
       }
     } catch (reason) {
       if (controller.signal.aborted) {
@@ -241,11 +527,177 @@ export function BuilderWorkspace() {
     }
   };
 
+  const guidedContext = (): GuidedContext => ({
+    audience: guidedAudience.trim() || undefined,
+    primaryAction: guidedPrimaryAction.trim() || undefined,
+    constraints: guidedConstraints
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 8),
+  });
+
   const cancelRun = () => abortRef.current?.abort();
-  const isRunning = runState === "running" || runState === "previewing";
+  const isRunning = [
+    "running",
+    "previewing",
+    "rebuilding",
+    "retrying",
+  ].includes(runState);
+
+  const saveBriefRevision = (nextProduct: ProductAgentOutput) => {
+    productRef.current = nextProduct;
+    setProduct(nextProduct);
+    setBriefRevision((current) => current + 1);
+    setStages((current) => ({
+      ...current,
+      product: "completed",
+      architecture: "stale",
+      engineering: "stale",
+      validation: "stale",
+    }));
+    setEditingBrief(false);
+    setRebuildPending(true);
+    setError("");
+  };
+
+  const restoreVersion = (version: ProjectVersion) => {
+    productRef.current = version.product;
+    technicalPlanRef.current = version.technicalPlan;
+    generatedAppRef.current = version.generatedApp;
+    providerLabelRef.current = version.providerLabel;
+    previousActiveVersionRef.current = version;
+    pendingVersionRef.current = null;
+    setPrompt(version.prompt);
+    setProviderLabel(version.providerLabel);
+    setProduct(version.product);
+    setTechnicalPlan(version.technicalPlan);
+    setGeneratedApp(version.generatedApp);
+    setAcceptedHtml(version.acceptedHtml);
+    setChecks(version.checks);
+    setActiveVersionId(version.id);
+    setBriefRevision(version.revision);
+    setStages({
+      product: "completed",
+      architecture: "completed",
+      engineering: "completed",
+      validation: "ready",
+    });
+    setChannelToken(crypto.randomUUID().replaceAll("-", ""));
+    setPreviewReady(false);
+    setPreviewInteraction(false);
+    setRunState("previewing");
+    setEditingBrief(false);
+    setRebuildPending(false);
+    setError("");
+  };
+
+  const resetLocalProject = () => {
+    clearProject(window.localStorage);
+    productRef.current = null;
+    technicalPlanRef.current = null;
+    generatedAppRef.current = null;
+    providerLabelRef.current = "尚未运行";
+    nextVersionRevisionRef.current = 1;
+    pendingVersionRef.current = null;
+    previousActiveVersionRef.current = null;
+    setPrompt(examples[0].prompt);
+    setMode("quick");
+    setRunState("idle");
+    setStages(initialStages());
+    setProviderLabel("尚未运行");
+    setEvents([]);
+    setProduct(null);
+    setTechnicalPlan(null);
+    setGeneratedApp(null);
+    setAcceptedHtml("");
+    setChecks([]);
+    setChannelToken("");
+    setVersions([]);
+    setActiveVersionId(null);
+    setBriefRevision(0);
+    setEditingBrief(false);
+    setRebuildPending(false);
+    setPreviewReady(false);
+    setPreviewInteraction(false);
+    setCurrentProgress("");
+    setError("");
+    setStorageError("");
+  };
+
+  const downloadHtml = () => {
+    if (!acceptedHtml) return;
+    const blob = new Blob([acceptedHtml], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `buildtrace-v${versions.find((version) => version.id === activeVersionId)?.revision ?? 1}.html`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const loadPresetProject = async () => {
+    previousActiveVersionRef.current =
+      versions.find((version) => version.id === activeVersionId) ??
+      versions.at(-1) ??
+      null;
+    pendingVersionRef.current = null;
+    setRunState("running");
+    setCurrentProgress("正在加载不调用模型的预置成功项目…");
+    setError("");
+    try {
+      const response = await fetch("/api/preset");
+      if (!response.ok) throw new Error("预置项目暂时不可用。");
+      const preset = PresetProjectSchema.parse(await response.json());
+      const version = createProjectVersion({
+        revision: nextVersionRevisionRef.current++,
+        prompt: preset.prompt,
+        providerLabel: preset.providerLabel,
+        product: preset.product,
+        technicalPlan: preset.technicalPlan,
+        generatedApp: preset.generatedApp,
+        acceptedHtml: preset.acceptedHtml,
+        checks: preset.checks,
+      });
+
+      productRef.current = preset.product;
+      technicalPlanRef.current = preset.technicalPlan;
+      generatedAppRef.current = preset.generatedApp;
+      providerLabelRef.current = preset.providerLabel;
+      setPrompt(preset.prompt);
+      setProviderLabel(preset.providerLabel);
+      setProduct(preset.product);
+      setTechnicalPlan(preset.technicalPlan);
+      setGeneratedApp(preset.generatedApp);
+      setAcceptedHtml(preset.acceptedHtml);
+      setChecks(preset.checks);
+      setStages({
+        product: "completed",
+        architecture: "completed",
+        engineering: "completed",
+        validation: "ready",
+      });
+      setEvents([]);
+      pendingVersionRef.current = version;
+      setBriefRevision(version.revision);
+      setChannelToken(crypto.randomUUID().replaceAll("-", ""));
+      setPreviewReady(false);
+      setPreviewInteraction(false);
+      setRebuildPending(false);
+      setEditingBrief(false);
+      setRunState("previewing");
+      setCurrentProgress("预置项目已通过服务端确定性验证，正在启动预览…");
+    } catch (reason) {
+      setRunState("failed");
+      setCurrentProgress("");
+      setError(
+        reason instanceof Error ? reason.message : "预置项目暂时不可用。",
+      );
+    }
+  };
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" data-hydrated={hydrated}>
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true" />
@@ -277,6 +729,22 @@ export function BuilderWorkspace() {
               </div>
             ))}
           </div>
+          {versions.length ? (
+            <div className="version-section" aria-label="最近成功版本">
+              <p>最近成功版本</p>
+              {[...versions].reverse().map((version) => (
+                <button
+                  className={`version-button ${activeVersionId === version.id ? "active" : ""}`}
+                  key={version.id}
+                  onClick={() => restoreVersion(version)}
+                  type="button"
+                >
+                  <span>v{version.revision}</span>
+                  <small>{version.product.productBrief.productName}</small>
+                </button>
+              ))}
+            </div>
+          ) : null}
           <div className="rail-note">
             <strong>透明，但不打断</strong>
             快速模式会自动推进。每个状态都来自真实事件，不展示隐藏推理。
@@ -298,6 +766,7 @@ export function BuilderWorkspace() {
             <div className="mode-row" aria-label="生成模式">
               <button
                 className={`mode-button ${mode === "quick" ? "active" : ""}`}
+                disabled={isRunning || !hydrated}
                 onClick={() => setMode("quick")}
                 type="button"
               >
@@ -305,13 +774,48 @@ export function BuilderWorkspace() {
               </button>
               <button
                 className={`mode-button ${mode === "guided" ? "active" : ""}`}
-                disabled
+                disabled={isRunning || !hydrated}
                 onClick={() => setMode("guided")}
                 type="button"
               >
-                引导模式 · 即将开放
+                引导模式
               </button>
             </div>
+            {mode === "guided" ? (
+              <div className="guided-context">
+                <label>
+                  目标用户（可选）
+                  <input
+                    maxLength={300}
+                    onChange={(event) => setGuidedAudience(event.target.value)}
+                    placeholder="例如：首次接商业项目的独立设计师"
+                    value={guidedAudience}
+                  />
+                </label>
+                <label>
+                  核心操作（可选）
+                  <input
+                    maxLength={300}
+                    onChange={(event) =>
+                      setGuidedPrimaryAction(event.target.value)
+                    }
+                    placeholder="例如：生成并复制透明报价"
+                    value={guidedPrimaryAction}
+                  />
+                </label>
+                <label>
+                  约束（可选，每行一项）
+                  <textarea
+                    maxLength={1_600}
+                    onChange={(event) =>
+                      setGuidedConstraints(event.target.value)
+                    }
+                    placeholder="不依赖外部服务\n移动端可用"
+                    value={guidedConstraints}
+                  />
+                </label>
+              </div>
+            ) : null}
             <div className="prompt-box">
               <textarea
                 aria-label="产品想法"
@@ -333,11 +837,11 @@ export function BuilderWorkspace() {
                 ) : (
                   <button
                     className="build-button"
-                    disabled={prompt.trim().length < 10}
-                    onClick={startRun}
+                    disabled={!hydrated || prompt.trim().length < 10}
+                    onClick={() => void startRun()}
                     type="button"
                   >
-                    开始生成 ↗
+                    {mode === "guided" ? "生成 Product Brief ↗" : "开始生成 ↗"}
                   </button>
                 )}
               </div>
@@ -353,6 +857,14 @@ export function BuilderWorkspace() {
                   {example.label}
                 </button>
               ))}
+              <button
+                className="example-button preset-button"
+                disabled={isRunning}
+                onClick={() => void loadPresetProject()}
+                type="button"
+              >
+                查看预置成功项目 · 零模型调用
+              </button>
             </div>
           </div>
 
@@ -362,9 +874,30 @@ export function BuilderWorkspace() {
               <span className="provider-label">{providerLabel}</span>
             </div>
 
+            {storageError && (
+              <div className="storage-banner" role="alert">
+                <span>{storageError}</span>
+                <button onClick={resetLocalProject} type="button">
+                  重置本地数据
+                </button>
+              </div>
+            )}
             {error && (
               <div className="error-banner" role="alert">
-                {error}
+                <span>{error}</span>
+                {lastFailedStage && lastFailureRetryable ? (
+                  <button
+                    onClick={() =>
+                      void startRun({
+                        action: "retry",
+                        retryFrom: lastFailedStage,
+                      })
+                    }
+                    type="button"
+                  >
+                    只重试{STAGE_META[lastFailedStage].short}阶段
+                  </button>
+                ) : null}
               </div>
             )}
             {currentProgress && (
@@ -382,23 +915,81 @@ export function BuilderWorkspace() {
                   <span className="artifact-title">
                     <span className="artifact-icon">P</span>Product Brief
                   </span>
-                  <span className="artifact-status">已完成 · 可检查</span>
+                  <span className="artifact-status">
+                    已完成 · 修订 {briefRevision || 1}
+                  </span>
                 </summary>
-                <div className="artifact-body">
-                  <strong>{product.productBrief.productName}</strong>
-                  <p>{product.productBrief.valueProposition}</p>
-                  <p>
-                    <strong>核心用户：</strong>
-                    {product.productBrief.primaryUser}
-                  </p>
-                  <ul>
-                    {product.productBrief.functionalRequirements.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </div>
+                {editingBrief ? (
+                  <ProductBriefEditor
+                    key={`${product.productBrief.productName}-${briefRevision}`}
+                    onCancel={() => setEditingBrief(false)}
+                    onSave={saveBriefRevision}
+                    product={product}
+                  />
+                ) : (
+                  <div className="artifact-body">
+                    <strong>{product.productBrief.productName}</strong>
+                    <p>{product.productBrief.valueProposition}</p>
+                    <p>
+                      <strong>核心用户：</strong>
+                      {product.productBrief.primaryUser}
+                    </p>
+                    <p>
+                      <strong>核心操作：</strong>
+                      {product.productBrief.primaryAction}
+                    </p>
+                    <ul>
+                      {product.productBrief.functionalRequirements.map(
+                        (item) => (
+                          <li key={item}>{item}</li>
+                        ),
+                      )}
+                    </ul>
+                    {!isRunning ? (
+                      <button
+                        className="text-button"
+                        onClick={() => setEditingBrief(true)}
+                        type="button"
+                      >
+                        编辑结构化 Brief
+                      </button>
+                    ) : null}
+                  </div>
+                )}
               </details>
             )}
+
+            {product &&
+            !editingBrief &&
+            (runState === "awaiting_user" || rebuildPending) ? (
+              <div className="rebuild-banner">
+                <div>
+                  <strong>
+                    {runState === "awaiting_user"
+                      ? "Brief 等待确认"
+                      : "下游产物已标记为过期"}
+                  </strong>
+                  <p>
+                    将重新执行 Architecture → Engineering →
+                    Validation；新版本成功前保留当前预览。
+                  </p>
+                </div>
+                <button
+                  className="build-button"
+                  onClick={() =>
+                    void startRun({
+                      action: "rebuild",
+                      rebuildFrom: "architecture",
+                    })
+                  }
+                  type="button"
+                >
+                  {runState === "awaiting_user"
+                    ? "确认并开始构建"
+                    : "重建受影响阶段"}
+                </button>
+              </div>
+            ) : null}
 
             {technicalPlan && (
               <details className="activity-card">
@@ -458,13 +1049,24 @@ export function BuilderWorkspace() {
                 </button>
               ))}
             </div>
-            <div className={`runtime-status ${previewReady ? "ready" : ""}`}>
-              <i />
-              {previewReady
-                ? previewInteraction
-                  ? "已就绪 · 交互已验证"
-                  : "预览已就绪"
-                : runStateLabel(runState)}
+            <div className="inspector-actions">
+              {acceptedHtml ? (
+                <button
+                  className="download-button"
+                  onClick={downloadHtml}
+                  type="button"
+                >
+                  下载 HTML
+                </button>
+              ) : null}
+              <div className={`runtime-status ${previewReady ? "ready" : ""}`}>
+                <i />
+                {previewReady
+                  ? previewInteraction
+                    ? "已就绪 · 交互已验证"
+                    : "预览已就绪"
+                  : runStateLabel(runState)}
+              </div>
             </div>
           </header>
 
@@ -569,6 +1171,8 @@ function stateLabel(state: StageState) {
     running: "正在执行",
     completed: "产物已生成",
     failed: "执行失败",
+    stale: "等待重建",
+    cancelled: "已取消",
     ready: "预览已验证",
   }[state];
 }
@@ -583,9 +1187,38 @@ function runStateLabel(state: RunState) {
   return {
     idle: "等待生成",
     running: "Pipeline 运行中",
+    awaiting_user: "等待确认 Brief",
     previewing: "预览启动中",
     ready: "预览已就绪",
     failed: "生成失败",
     cancelled: "已取消",
+    rebuilding: "重建下游中",
+    retrying: "重试失败阶段中",
   }[state];
+}
+
+function prepareStagesForResume(
+  current: Record<StageId, StageState>,
+  resumeFrom: StageId,
+) {
+  const index = stageOrder.indexOf(resumeFrom);
+  return Object.fromEntries(
+    stageOrder.map((stage, stageIndex) => [
+      stage,
+      stageIndex < index ? current[stage] : "queued",
+    ]),
+  ) as Record<StageId, StageState>;
+}
+
+function isInterruptedState(state: RunState) {
+  return ["running", "previewing", "rebuilding", "retrying"].includes(state);
+}
+
+function markInterruptedStage(stages: Record<StageId, StageState>) {
+  return Object.fromEntries(
+    Object.entries(stages).map(([stage, state]) => [
+      stage,
+      state === "running" ? "failed" : state,
+    ]),
+  ) as Record<StageId, StageState>;
 }

@@ -62,24 +62,53 @@ export class FakeModelProvider implements ModelProvider {
 
   async generateTechnicalPlan(
     prompt: string,
-    _product: ProductAgentOutput,
+    product: ProductAgentOutput,
     signal: AbortSignal,
   ) {
     throwIfAborted(signal);
-    return createTechnicalPlan(prompt);
+    const plan = createTechnicalPlan(prompt);
+    return {
+      ...plan,
+      behaviors: [
+        ...plan.behaviors,
+        `实现 Product Brief 修订中的 ${product.productBrief.functionalRequirements.length} 项功能要求。`,
+      ],
+    };
   }
 
   async generateApp(
     prompt: string,
-    _product: ProductAgentOutput,
+    product: ProductAgentOutput,
     _technicalPlan: TechnicalPlan,
     signal: AbortSignal,
   ) {
     throwIfAborted(signal);
-    return createGeneratedApp(prompt);
+    const app = createGeneratedApp(prompt);
+    const latestRequirement =
+      product.productBrief.functionalRequirements.at(-1) ?? "核心需求";
+    const note = `<aside id="brief-revision" style="max-width:920px;margin:-42px auto 32px;padding:0 22px;color:#657168;font:12px/1.5 Inter,ui-sans-serif,system-ui,sans-serif">本版本依据 ${escapeHtml(latestRequirement)} 构建</aside>`;
+    return {
+      ...app,
+      summary: `${app.summary} 已同步 ${product.productBrief.functionalRequirements.length} 项 Product Brief 要求。`,
+      html: app.html.replace("</body>", `${note}</body>`),
+    };
   }
 }
 
 function throwIfAborted(signal: AbortSignal) {
   if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+}
+
+function escapeHtml(value: string) {
+  return value.replace(
+    /[&<>"']/g,
+    (character) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[character] ?? character,
+  );
 }
