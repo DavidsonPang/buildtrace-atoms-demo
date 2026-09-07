@@ -4,6 +4,7 @@
 > 关联需求：[product-requirements.md](./product-requirements.md)  
 > 关键决策：[ADR-0001：生成沙箱化的自包含 HTML](./decisions/0001-sandboxed-self-contained-html.md)
 > 范围升级：[ADR-0002：Supabase 身份与本地优先云持久化](./decisions/0002-supabase-local-first-persistence.md)
+> 迭代策略：[ADR-0003：基于 Product Brief 重建并提供虚拟多文件视图](./decisions/0003-natural-language-revision-and-virtual-files.md)
 
 ## 1. 技术方案摘要
 
@@ -17,6 +18,8 @@ BuildTrace 采用 **本地优先的 Next.js 应用 + 服务端 Agent Orchestrato
 - 一个 `POST` 请求通过 NDJSON 流式返回事件；
 - Pipeline 固定为 Product → Architecture → Engineering → Validation；
 - 生成自包含 HTML，通过受限 `iframe srcDoc` 运行；
+- 后续自然语言修改以当前 Product Brief 为基线重跑完整 Pipeline，并在 Preview Ready 后提交新版本；
+- Code 面板把同一份自包含 HTML 只读投影为 `index.html`、`styles.css`、`app.js`，不引入第二套运行事实；
 - 使用确定性规则验证 HTML、安全策略、预览就绪和交互；
 - 使用 Supabase Auth 保存身份与会话，Postgres 保存项目和最近三个成功版本；
 - 使用按用户隔离的版本化 LocalStorage 作为本地缓存和断网恢复层；
@@ -141,6 +144,21 @@ MVP 不实现通用依赖图。固定依赖链更容易测试，也足以证明�
 - 重试请求携带有效产物快照和 `retryFrom`，服务端必须重新执行 Schema 与大小校验；
 - 同一幂等键在服务端有效窗口内不能重复发起付费调用。
 
+### 4.5 自然语言迭代
+
+1. 客户端仅在存在活动成功版本时展示修改入口，并将 3–800 字符的 `revisionInstruction` 连同当前 Product 产物提交；
+2. 服务端 Schema 要求 `action: "revise"` 同时具备修改要求和 Product 产物，禁止混用 `retryFrom` / `rebuildFrom`；
+3. Orchestrator 把原始 Prompt、当前 Product Brief 和修改要求组合为受限上下文，不发送上一版完整 HTML；
+4. Product → Architecture → Engineering → Validation 完整重跑；即使当前是引导模式也不重复暂停；
+5. 修改期间继续显示上一成功预览；只有服务端验证通过且 iframe 上报 Ready，才把候选版本加入最近版本；
+6. 失败阶段重试保留同一修改要求，成功版本把修改要求写入 LocalStorage 与 `project_versions.revision_instruction`。
+
+完整重建牺牲了逐字符补丁精度，但能让 Product Brief、Technical Plan 和实现保持一致，也避免把可能接近 150 KB 的旧 HTML重复放入每个 Agent 请求。
+
+### 4.6 虚拟多文件源码视图
+
+运行与持久化仍只接受通过验证的版本。Code 面板只读取活动成功版本对应的原始 `generatedApp.html`，不会在新候选产物验证期间提前展示它。浏览器纯函数 `splitSelfContainedHtml` 按文档顺序提取所有内联 `<style>` 与 `<script>`：HTML 中替换为虚拟的 `./styles.css` 和 `./app.js` 引用，同类型多块以来源注释拼接。这个投影只用于阅读，不参与执行、下载或保存；预览使用的 `acceptedHtml` 是同一原始产物经安全策略与 Runtime Bridge 注入后的版本。
+
 ## 5. 状态模型
 
 ### 5.1 Run 状态
@@ -227,8 +245,9 @@ const RunRequestSchema = z.object({
   runId: z.string().uuid(),
   idempotencyKey: z.string().min(16).max(128),
   mode: z.enum(["quick", "guided"]),
-  action: z.enum(["initial", "continue", "retry", "rebuild"]),
+  action: z.enum(["initial", "continue", "retry", "rebuild", "revise"]),
   prompt: z.string().trim().min(10).max(2_000),
+  revisionInstruction: z.string().trim().min(3).max(800).optional(),
   context: z
     .object({
       audience: z.string().max(300).optional(),
@@ -418,7 +437,7 @@ Preview Ready Timeout 与模型生成超时分开计算。不能只用 iframe `l
 ### 11.1 数据模型
 
 - `projects`：当前项目快照，包含 `user_id`、Prompt、Run/Stage 状态、Product/Technical/Generated 产物、活动版本、错误与修订；
-- `project_versions`：最近三个成功版本，包含结构化产物、确定性检查和 `accepted_html`；
+- `project_versions`：最近三个成功版本，包含结构化产物、确定性检查、`accepted_html` 和该版本的 `revision_instruction`；
 - HTML 首版按文本存入 Postgres，数据库和 Zod 都限制为 150 KB；超过这个门槛迁移到 Supabase Storage，并只在版本行保存对象引用和摘要；
 - 当前 UI 只恢复用户最近保存的项目，Schema 支持后续增加项目列表。
 
@@ -481,12 +500,14 @@ BuilderPage
 │   └── VersionList
 ├── Workbench
 │   ├── IdeaComposer
+│   ├── RevisionComposer
 │   ├── AgentActivity
 │   └── ArtifactCard
 │       └── ProductBriefEditor
 └── Inspector
     ├── PreviewPanel
     ├── CodePanel
+    │   └── VirtualFileTree
     ├── LogsPanel
     └── ValidationPanel
 ```
@@ -508,6 +529,8 @@ BuilderPage
 - 请求、产物和错误 Schema；
 - 下游 stale 传播；
 - 取消、失败、重试和重建后的 Reducer 行为；
+- 自然语言修改请求约束、四阶段重跑和引导模式不重复暂停；
+- 自包含 HTML 到三个虚拟文件的确定性拆分与多块合并；
 - HTML Policy、CSP 注入和 Preview Bridge；
 - 存储迁移、损坏、容量限制和淘汰；
 - 限流与幂等边界。
@@ -525,6 +548,8 @@ BuilderPage
 - 快速示例 → 真实事件流 → Preview Ready；
 - 引导模式只暂停一次，点击 Build 后继续；
 - 编辑 Brief → 下游 stale → 重建 → 新版本；
+- 自然语言修改 → 完整重建 → 新版本 → 旧版本仍可回滚；
+- Code 面板在 HTML、CSS、JavaScript 三个虚拟文件间切换；
 - 运行错误显示在 Logs 并阻止 Ready；
 - 刷新后恢复最近成功状态；
 - 键盘访问和状态 Live Region；
@@ -547,6 +572,8 @@ D3 已选定 `deepseek-v4-flash`。本机 Key 配置完成后，先用两个固�
 | M7 失败/取消/重试      | Error Normalizer、AbortSignal、Retry API    | 故障注入 + E2E                     |
 | M8 持久化与保护        | `ProjectStore`、Request Guards、Preset Flag | 存储/安全测试 + Bundle Scan        |
 | M9 账号与云同步        | Supabase Auth、Postgres、RLS、Local Cache   | Auth 单测 + Policy 检查 + 集成 E2E |
+| M10 自然语言迭代       | Revision Composer、Orchestrator、Version    | 契约单测 + Revision E2E            |
+| M11 虚拟多文件预览     | Source Projector、Virtual File Tree         | 拆分单测 + Code Panel E2E          |
 
 ## 16. 最高风险与验证顺序
 
@@ -595,6 +622,10 @@ Supabase 提供跨设备事实来源与 RLS 隔离；LocalStorage 仍承担即�
 ### NDJSON，而不是 WebSocket
 
 当前交互是一次请求范围内、以服务端到客户端为主的 Stream。NDJSON 支持 `POST` 和原生 Stream，基础设施更简单；持久双向通信属于生产演进。
+
+### Product Brief 重建，而不是 HTML 代码补丁
+
+首版自然语言迭代以产品定义为主线完整重建，不把旧 HTML 塞入模型上下文。这样更符合多 Agent 产物一致性和 ¥10 预算边界；代价是不能保证未提及的像素或代码结构逐字不变。详见 ADR-0003。
 
 ## 19. D2、D3、D4 锁定结论
 

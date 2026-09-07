@@ -1,8 +1,8 @@
 # BuildTrace 验证报告
 
 > 日期：2026-09-07
-> 范围：本地端到端纵向切片、DeepSeek V4 Flash Provider Spike、五场景评测、Vercel 生产部署，以及 Supabase 身份/持久化升级的本地与生产验证
-> 结论：本地核心生成链路通过；真实模型场景 4/5 成功，达到 PRD 的最低验收线；生产环境真实 Pipeline 与平台限流已验证。Supabase 邮箱身份、数据库写入和跨 Origin 云恢复已在线验收；双账号越权与断网重连仍明确保留为待验证项。
+> 范围：本地端到端纵向切片、DeepSeek V4 Flash Provider Spike、五场景评测、Vercel 生产部署、Supabase 身份/持久化，以及自然语言迭代与虚拟多文件源码视图的本地验证
+> 结论：本地核心生成链路通过；真实模型场景 4/5 成功，达到 PRD 的最低验收线；生产环境真实 Pipeline 与平台限流已验证。Supabase 邮箱身份、数据库写入和跨 Origin 云恢复已在线验收。自然语言迭代与虚拟文件视图已通过本地自动验证，但增量数据库 Migration 和新版生产部署尚未执行；双账号越权与断网重连仍明确保留为待验证项。
 
 ## 1. 验证口径
 
@@ -19,19 +19,20 @@
 | ------------------ | ---- | ----------------------------------------------------------------------- |
 | ESLint             | 通过 | `npm run lint`，0 error / 0 warning                                     |
 | TypeScript         | 通过 | `npm run typecheck`                                                     |
-| 单元测试           | 通过 | 7 个测试文件、30 个测试通过                                             |
+| 单元测试           | 通过 | 8 个测试文件、35 个测试通过                                             |
 | 生产构建           | 通过 | `npm run build`；主页和 `/api/preset` 为 Static，`/api/runs` 为 Dynamic |
-| Fake Provider E2E  | 通过 | Chromium 用户流程 4/4 通过                                              |
+| Fake Provider E2E  | 通过 | Chromium 用户流程 5/5 通过                                              |
 | 真实产物浏览器回放 | 通过 | 10 个交互控件；输入改变后结果变化；父页面显示“已就绪 · 交互已验证”      |
 
-单元测试覆盖 Orchestrator 阶段顺序与取消、引导式暂停、局部重建、失败阶段续跑、请求快照校验、DeepSeek Responses API 请求契约、限流错误归一化、一次结构化修复、预算计数、HTML 安全策略、Preview 注入、本地快照的校验/迁移/账号分区/版本上限、服务端 Bearer Token 验证边界，以及 Supabase Migration 的 Grants、RLS Policy 和 HTML 大小约束。
+单元测试覆盖 Orchestrator 阶段顺序与取消、引导式暂停、局部重建、自然语言迭代、失败阶段续跑、请求快照校验、DeepSeek Responses API 请求契约、限流错误归一化、一次结构化修复、预算计数、HTML 安全策略、Preview 注入、虚拟源码拆分、本地快照的校验/迁移/账号分区/版本上限、服务端 Bearer Token 验证边界，以及 Supabase Migration 的 Grants、RLS Policy、修改元数据和 HTML 大小约束。
 
-四条 Chromium 端到端流程分别验证：
+五条 Chromium 端到端流程分别验证：
 
 1. 快速模式生成并操作沙箱预览。
 2. 引导模式在 Product Brief 后暂停，再从 Architecture 继续。
 3. 编辑 Brief 后仅重建下游、生成 v2，并在刷新后恢复。
 4. 预置成功项目无需模型调用即可进入可交互预览。
+5. 成功版本通过自然语言修改生成 v2，并在 `index.html`、`styles.css`、`app.js` 三个虚拟源码文件间切换。
 
 ## 3. DeepSeek Provider 实测
 
@@ -163,6 +164,14 @@ exceeded action = rate_limit (HTTP 429)
 - 真实断网编辑后恢复联网，验证自动重新拉取与同步；当前由代码路径和单元边界覆盖；
 - Vercel `/api/runs` 的未登录 401 与登录后完整 DeepSeek Pipeline；直连测试受本机网络超时影响，为避免额外模型费用未重复真实生成；
 
+### 7.4 自然语言迭代增量状态
+
+- 请求契约会拒绝缺失修改要求或当前 Product 产物的 `revise` 请求；
+- Fake Provider 集成测试证明引导模式下修改不会再次暂停，并按 Product → Architecture → Engineering → Validation 完整执行；
+- 浏览器测试证明 v2 只有在 Preview Ready 后出现，v1 仍保留在版本列表，修改内容在新预览中可见；
+- 纯函数测试证明多个 Style/Script 块会按顺序投影到三个虚拟文件，运行使用的 `acceptedHtml` 不被修改；
+- `202609070002_iteration_metadata.sql` 已通过静态契约测试，但尚未应用到生产 Supabase；新版应用尚未部署，线上仍保持已验证的 v1.1 行为。
+
 ## 8. 已知限制与下一步
 
 - ROI 场景没有在 75 秒新上限下重复验证，保留为真实失败样本。
@@ -173,8 +182,10 @@ exceeded action = rate_limit (HTTP 429)
 - HTML 首版存入 Postgres，超过 150 KB 后仍需迁移 Supabase Storage。
 - 已完成项目可在刷新后恢复；未完成运行的流式连接和一键续跑元数据不会跨刷新恢复。
 - 引导模式只允许编辑 Product Brief；Technical Plan 目前只读。
+- 自然语言修改基于 Product Brief 进行语义重建，不保证未提及的代码或像素细节逐字不变；虚拟多文件视图只读，不是真实构建目录。
+- 生产 Supabase 在部署新版前必须先执行 `202609070002_iteration_metadata.sql`，否则云端版本查询会因缺少字段失败。
 - 线上只执行了一次完整真实生成，不能据此推断长期可用性或所有提示词表现。
 - 没有把 Provider 用量暴露给客户端；费用应以 DeepSeek 控制台账单为最终依据。
 - 内存次数与费用计数不是分布式配额；当前 WAF 限制单 IP 频率，但不能替代用户级配额。
 
-核心 Agent Pipeline、差异化重建、本地恢复和 Supabase 单账号生产链路已完成；双账号隔离与断网重连不会被当前证据夸大为已验证。
+核心 Agent Pipeline、差异化重建、本地恢复和 Supabase 单账号生产链路已完成；自然语言迭代与虚拟源码视图已完成本地实现和自动验证。生产增量迁移、部署、双账号隔离与断网重连不会被当前证据夸大为已验证。

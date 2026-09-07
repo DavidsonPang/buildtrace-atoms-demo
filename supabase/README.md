@@ -1,7 +1,7 @@
 # Supabase 配置
 
 1. 创建 Supabase 项目。
-2. 在 SQL Editor 中执行 `migrations/202609070001_buildtrace_projects.sql`。
+2. 在 SQL Editor 中按文件名顺序执行 `migrations/` 下尚未应用的 SQL：首装依次执行 `202609070001_buildtrace_projects.sql`、`202609070002_iteration_metadata.sql`；已有首版数据库只需执行第二个增量迁移。
 3. 从项目 Connect 面板复制 Project URL 与 Publishable Key。
 4. 在本地和 Vercel 配置：
 
@@ -32,3 +32,5 @@ Supabase 默认邮件服务仅适合验证，正式生产应配置自有 SMTP �
 6. 检查仓库、浏览器 Bundle 和 Vercel 变量：只存在 Publishable Key，不存在 `service_role` Key。
 
 SQL 文件是可审阅的首版迁移，不应直接编辑线上表来制造与仓库不一致的 Schema。后续变更新增迁移文件。
+
+`202609070002_iteration_metadata.sql` 为 `project_versions` 增加最长 800 字符的 `revision_instruction`，默认空字符串以兼容已有版本。应用该迁移前不要部署包含自然语言迭代的新应用版本，否则云端版本查询会因字段不存在而失败。

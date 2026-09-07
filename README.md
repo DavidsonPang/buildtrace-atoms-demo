@@ -8,7 +8,7 @@ BuildTrace 是一个“从想法到可运行产品”的透明 AI Builder：用�
 
 1. 点击“预置成功项目”可以零成本立即体验完整结果；也可以选择示例或输入至少 10 个字符的产品想法。
 2. 注册或登录后点击“开始生成”，观察 Product、Architecture、Engineering、Validation 四个阶段的真实事件与中间产物。
-3. 在右侧操作预览；如需观察 Human-in-the-loop 流程，可切换引导模式，编辑 Product Brief 后只重建下游阶段。
+3. 在右侧操作预览；成功后可用自然语言继续修改并生成可回滚的新版本，也可在 Code 标签中切换查看虚拟的 HTML、CSS 和 JavaScript 文件。
 
 在线生成使用 DeepSeek V4 Flash，通常需要约 40–90 秒。公开 Demo 要求登录，并按 IP 限制为每 10 分钟 3 次生成请求，以控制滥用和模型费用；预置成功项目无需登录或模型调用。
 
@@ -20,6 +20,8 @@ BuildTrace 是一个“从想法到可运行产品”的透明 AI Builder：用�
 - DeepSeek Provider Adapter、分阶段超时、错误归一化和一次受限格式修复。
 - 快速模式与引导模式；引导模式会在 Product Brief 后暂停，等待用户确认。
 - Product Brief 结构化编辑、下游失效标记和从 Architecture 开始的局部重建。
+- 成功版本上的自然语言迭代：合并当前 Product Brief 后完整重跑四阶段，新版本 Ready 前保留旧预览。
+- Code 标签把同一份自包含 HTML 只读投影为 `index.html`、`styles.css`、`app.js`；界面明确标注其为虚拟文件视图。
 - 失败阶段续跑：保留已成功的上游产物，只重试失败阶段及其下游。
 - 自包含 HTML 产物；进入预览前执行大小、结构、危险标签、外部资源和交互目标检查。
 - `iframe sandbox="allow-scripts"` 隔离运行，使用带随机 Channel Token 的 `postMessage` 验证就绪、交互和运行时错误。
@@ -65,6 +67,7 @@ DeepSeek Responses API
 - [技术设计](docs/technical-design.md)
 - [沙箱 ADR](docs/decisions/0001-sandboxed-self-contained-html.md)
 - [身份与持久化 ADR](docs/decisions/0002-supabase-local-first-persistence.md)
+- [自然语言迭代与虚拟文件 ADR](docs/decisions/0003-natural-language-revision-and-virtual-files.md)
 - [验证报告](docs/validation-report.md)
 
 ## 本地运行
@@ -111,7 +114,7 @@ npm run build
 npm run test:e2e
 ```
 
-当前证据包括 30 个单元测试、4 条 Chromium 端到端流程、5 个固定提示词的真实模型评测，以及 Vercel 生产环境的实时生成、WAF 429、邮箱登录与跨 Origin 云恢复验证。尚未完成的双账号越权测试和断网重连测试会在[验证报告](docs/validation-report.md)中明确保留。
+当前证据包括 35 个单元测试、5 条 Chromium 端到端流程、5 个固定提示词的真实模型评测，以及 Vercel 生产环境的实时生成、WAF 429、邮箱登录与跨 Origin 云恢复验证。自然语言迭代和虚拟多文件视图已完成本地验证，生产启用前还需执行增量 Migration。尚未完成的双账号越权测试和断网重连测试会在[验证报告](docs/validation-report.md)中明确保留。
 
 ## 安全与费用边界
 
@@ -129,7 +132,8 @@ npm run test:e2e
 - 生成 HTML 首版存入 Postgres 且限制为 150 KB；体积扩大后需要迁移到 Supabase Storage。
 - 已完成的项目可在刷新后恢复；但刷新发生在未完成运行中时，不承诺恢复流式连接或一键续跑元数据。
 - 引导模式只在 Product Brief 暂停一次；Technical Plan 可查看但不提供可视化编辑器。
-- 生成范围限于自包含前端应用，不运行任意 npm 依赖或生成的后端代码。
+- 自然语言修改会基于当前 Product Brief 完整重建，不是对上一版 HTML 的逐字符补丁，因此未明确要求保留的像素细节可能变化。
+- Code 标签的三个文件是只读虚拟投影；生成范围仍限于自包含前端应用，不运行任意 npm 依赖或生成的后端代码。
 - Serverless 实例内的次数与费用估算会随冷启动重置，因此必须与平台限流和账户额度配合。
 
 这些限制会保留为明确的原型边界，而不会被描述为生产级能力。
