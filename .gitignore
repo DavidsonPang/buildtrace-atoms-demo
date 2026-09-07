@@ -1,0 +1,21 @@
+# Dependencies and builds
+node_modules/
+.next/
+out/
+coverage/
+playwright-report/
+test-results/
+
+# Environment and deployment state
+.env*
+!.env.example
+.vercel/
+
+# Local machine files
+.DS_Store
+*.log
+
+# Private working materials — never publish
+.internal/
+docs/00-execution-plan.md
+/*.txt
