@@ -1,9 +1,12 @@
 import { RunEventSchema, RunRequestSchema } from "@/src/lib/contracts";
-import { runFakePipeline } from "@/src/lib/orchestrator";
+import { authorizeLiveRun } from "@/src/lib/live-budget";
+import { ModelProviderError } from "@/src/lib/model-provider";
+import { runPipeline } from "@/src/lib/orchestrator";
+import { createConfiguredProvider } from "@/src/lib/provider-factory";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 180;
 
 export async function POST(request: Request) {
   let body: unknown;
@@ -21,11 +24,32 @@ export async function POST(request: Request) {
     );
   }
 
+  let provider;
+  try {
+    provider = createConfiguredProvider();
+    if (provider.id === "deepseek") {
+      authorizeLiveRun({
+        sessionId: parsed.data.clientSessionId,
+        idempotencyKey: parsed.data.idempotencyKey,
+      });
+    }
+  } catch (error) {
+    const message =
+      error instanceof ModelProviderError
+        ? error.message
+        : "模型服务配置无效。";
+    return Response.json({ error: message }, { status: 503 });
+  }
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        for await (const event of runFakePipeline(parsed.data, request.signal)) {
+        for await (const event of runPipeline(
+          parsed.data,
+          request.signal,
+          provider,
+        )) {
           const validated = RunEventSchema.parse(event);
           controller.enqueue(encoder.encode(`${JSON.stringify(validated)}\n`));
         }

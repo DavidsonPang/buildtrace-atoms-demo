@@ -16,9 +16,15 @@ import { CHANNEL_TOKEN_PLACEHOLDER } from "@/src/lib/html-sandbox";
 
 type StageState = "queued" | "running" | "completed" | "failed" | "ready";
 type InspectorTab = "preview" | "code" | "logs" | "validation";
-type RunState = "idle" | "running" | "previewing" | "ready" | "failed" | "cancelled";
+type RunState =
+  "idle" | "running" | "previewing" | "ready" | "failed" | "cancelled";
 
-const stageOrder: StageId[] = ["product", "architecture", "engineering", "validation"];
+const stageOrder: StageId[] = [
+  "product",
+  "architecture",
+  "engineering",
+  "validation",
+];
 
 const examples = [
   {
@@ -54,7 +60,9 @@ export function BuilderWorkspace() {
   const [providerLabel, setProviderLabel] = useState("尚未运行");
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [product, setProduct] = useState<ProductAgentOutput | null>(null);
-  const [technicalPlan, setTechnicalPlan] = useState<TechnicalPlan | null>(null);
+  const [technicalPlan, setTechnicalPlan] = useState<TechnicalPlan | null>(
+    null,
+  );
   const [generatedApp, setGeneratedApp] = useState<GeneratedApp | null>(null);
   const [acceptedHtml, setAcceptedHtml] = useState("");
   const [checks, setChecks] = useState<ValidationCheck[]>([]);
@@ -65,6 +73,15 @@ export function BuilderWorkspace() {
   const [error, setError] = useState("");
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const sessionIdRef = useRef<string>("");
+
+  useEffect(() => {
+    const storageKey = "buildtrace-client-session-id";
+    const existing = window.sessionStorage.getItem(storageKey);
+    const sessionId = existing ?? crypto.randomUUID();
+    window.sessionStorage.setItem(storageKey, sessionId);
+    sessionIdRef.current = sessionId;
+  }, []);
 
   const previewHtml = useMemo(
     () =>
@@ -79,7 +96,8 @@ export function BuilderWorkspace() {
       if (event.source !== iframeRef.current?.contentWindow) return;
       if (!event.data || typeof event.data !== "object") return;
       const data = event.data as Record<string, unknown>;
-      if (data.source !== "buildtrace-preview" || data.token !== channelToken) return;
+      if (data.source !== "buildtrace-preview" || data.token !== channelToken)
+        return;
 
       if (data.type === "ready") {
         setPreviewReady(true);
@@ -112,8 +130,10 @@ export function BuilderWorkspace() {
     }
     if (event.type === "artifact.completed") {
       if (event.payload.kind === "product") setProduct(event.payload.artifact);
-      if (event.payload.kind === "technical-plan") setTechnicalPlan(event.payload.artifact);
-      if (event.payload.kind === "generated-app") setGeneratedApp(event.payload.artifact);
+      if (event.payload.kind === "technical-plan")
+        setTechnicalPlan(event.payload.artifact);
+      if (event.payload.kind === "generated-app")
+        setGeneratedApp(event.payload.artifact);
     }
     if (event.type === "stage.completed") {
       setStages((current) => ({ ...current, [event.stage]: "completed" }));
@@ -171,6 +191,7 @@ export function BuilderWorkspace() {
         body: JSON.stringify({
           protocolVersion: 1,
           runId: crypto.randomUUID(),
+          clientSessionId: sessionIdRef.current || crypto.randomUUID(),
           idempotencyKey: crypto.randomUUID(),
           mode,
           action: "initial",
@@ -198,7 +219,8 @@ export function BuilderWorkspace() {
         for (const line of lines) {
           if (!line.trim()) continue;
           const parsed = RunEventSchema.safeParse(JSON.parse(line));
-          if (!parsed.success) throw new Error("收到无法识别的事件，已停止更新界面。");
+          if (!parsed.success)
+            throw new Error("收到无法识别的事件，已停止更新界面。");
           handleEvent(parsed.data);
         }
         if (done) break;
@@ -209,7 +231,9 @@ export function BuilderWorkspace() {
         setCurrentProgress("");
       } else {
         setRunState("failed");
-        setError(reason instanceof Error ? reason.message : "生成失败，请稍后重试。");
+        setError(
+          reason instanceof Error ? reason.message : "生成失败，请稍后重试。",
+        );
         setCurrentProgress("");
       }
     } finally {
@@ -229,7 +253,7 @@ export function BuilderWorkspace() {
         </div>
         <div className="topbar-meta">
           <span>idea → product</span>
-          <span className="demo-chip">本地垂直切片</span>
+          <span className="demo-chip">透明生成 Demo</span>
         </div>
       </header>
 
@@ -240,11 +264,15 @@ export function BuilderWorkspace() {
             {stageOrder.map((stage, index) => (
               <div className={`stage-item ${stages[stage]}`} key={stage}>
                 <span className="stage-dot" aria-hidden="true">
-                  {stages[stage] === "completed" || stages[stage] === "ready" ? "✓" : `0${index + 1}`}
+                  {stages[stage] === "completed" || stages[stage] === "ready"
+                    ? "✓"
+                    : `0${index + 1}`}
                 </span>
                 <span>
                   <span className="stage-name">{STAGE_META[stage].short}</span>
-                  <span className="stage-state">{stateLabel(stages[stage])}</span>
+                  <span className="stage-state">
+                    {stateLabel(stages[stage])}
+                  </span>
                 </span>
               </div>
             ))}
@@ -258,9 +286,14 @@ export function BuilderWorkspace() {
         <section className="workbench">
           <div className="composer">
             <p className="eyebrow">AI 产品团队 · Fast by default</p>
-            <h1>把想法变成<br />可以操作的产品。</h1>
+            <h1>
+              把想法变成
+              <br />
+              可以操作的产品。
+            </h1>
             <p className="composer-copy">
-              描述一个业务想法。专业 Agent 会完成产品定义、交互规划、构建和验证，你可以随时查看产物。
+              描述一个业务想法。专业 Agent
+              会完成产品定义、交互规划、构建和验证，你可以随时查看产物。
             </p>
             <div className="mode-row" aria-label="生成模式">
               <button
@@ -290,7 +323,11 @@ export function BuilderWorkspace() {
               <div className="prompt-actions">
                 <span className="prompt-count">{prompt.length} / 2000</span>
                 {isRunning ? (
-                  <button className="cancel-button" onClick={cancelRun} type="button">
+                  <button
+                    className="cancel-button"
+                    onClick={cancelRun}
+                    type="button"
+                  >
                     取消
                   </button>
                 ) : (
@@ -325,23 +362,40 @@ export function BuilderWorkspace() {
               <span className="provider-label">{providerLabel}</span>
             </div>
 
-            {error && <div className="error-banner" role="alert">{error}</div>}
-            {currentProgress && <div className="live-progress">{currentProgress}</div>}
+            {error && (
+              <div className="error-banner" role="alert">
+                {error}
+              </div>
+            )}
+            {currentProgress && (
+              <div className="live-progress">{currentProgress}</div>
+            )}
             {!product && !technicalPlan && !generatedApp && !isRunning ? (
-              <div className="empty-activity">选择一个示例开始，阶段产物会在这里按真实完成顺序出现。</div>
+              <div className="empty-activity">
+                选择一个示例开始，阶段产物会在这里按真实完成顺序出现。
+              </div>
             ) : null}
 
             {product && (
               <details className="activity-card" open>
                 <summary>
-                  <span className="artifact-title"><span className="artifact-icon">P</span>Product Brief</span>
+                  <span className="artifact-title">
+                    <span className="artifact-icon">P</span>Product Brief
+                  </span>
                   <span className="artifact-status">已完成 · 可检查</span>
                 </summary>
                 <div className="artifact-body">
                   <strong>{product.productBrief.productName}</strong>
                   <p>{product.productBrief.valueProposition}</p>
-                  <p><strong>核心用户：</strong>{product.productBrief.primaryUser}</p>
-                  <ul>{product.productBrief.functionalRequirements.map((item) => <li key={item}>{item}</li>)}</ul>
+                  <p>
+                    <strong>核心用户：</strong>
+                    {product.productBrief.primaryUser}
+                  </p>
+                  <ul>
+                    {product.productBrief.functionalRequirements.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
                 </div>
               </details>
             )}
@@ -349,12 +403,20 @@ export function BuilderWorkspace() {
             {technicalPlan && (
               <details className="activity-card">
                 <summary>
-                  <span className="artifact-title"><span className="artifact-icon">A</span>Technical Plan</span>
+                  <span className="artifact-title">
+                    <span className="artifact-icon">A</span>Technical Plan
+                  </span>
                   <span className="artifact-status">已完成 · 可检查</span>
                 </summary>
                 <div className="artifact-body">
                   <p>{technicalPlan.interactionModel}</p>
-                  <ul>{technicalPlan.components.map((item) => <li key={item.name}><strong>{item.name}</strong>：{item.responsibility}</li>)}</ul>
+                  <ul>
+                    {technicalPlan.components.map((item) => (
+                      <li key={item.name}>
+                        <strong>{item.name}</strong>：{item.responsibility}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               </details>
             )}
@@ -362,10 +424,17 @@ export function BuilderWorkspace() {
             {generatedApp && (
               <details className="activity-card">
                 <summary>
-                  <span className="artifact-title"><span className="artifact-icon">E</span>Generated App</span>
-                  <span className="artifact-status">{checks.length ? "已通过确定性验证" : "已生成 · 等待验证"}</span>
+                  <span className="artifact-title">
+                    <span className="artifact-icon">E</span>Generated App
+                  </span>
+                  <span className="artifact-status">
+                    {checks.length ? "已通过确定性验证" : "已生成 · 等待验证"}
+                  </span>
                 </summary>
-                <div className="artifact-body"><strong>{generatedApp.title}</strong><p>{generatedApp.summary}</p></div>
+                <div className="artifact-body">
+                  <strong>{generatedApp.title}</strong>
+                  <p>{generatedApp.summary}</p>
+                </div>
               </details>
             )}
           </div>
@@ -374,7 +443,9 @@ export function BuilderWorkspace() {
         <section className="inspector">
           <header className="inspector-header">
             <div className="tabs" role="tablist" aria-label="结果检查器">
-              {(["preview", "code", "logs", "validation"] as InspectorTab[]).map((tab) => (
+              {(
+                ["preview", "code", "logs", "validation"] as InspectorTab[]
+              ).map((tab) => (
                 <button
                   aria-selected={activeTab === tab}
                   className={`tab-button ${activeTab === tab ? "active" : ""}`}
@@ -388,7 +459,12 @@ export function BuilderWorkspace() {
               ))}
             </div>
             <div className={`runtime-status ${previewReady ? "ready" : ""}`}>
-              <i />{previewReady ? (previewInteraction ? "已就绪 · 交互已验证" : "预览已就绪") : runStateLabel(runState)}
+              <i />
+              {previewReady
+                ? previewInteraction
+                  ? "已就绪 · 交互已验证"
+                  : "预览已就绪"
+                : runStateLabel(runState)}
             </div>
           </header>
 
@@ -406,23 +482,79 @@ export function BuilderWorkspace() {
                   />
                 ) : (
                   <div className="preview-empty">
-                    <div><div className="preview-empty-mark">↗</div><h2>等待第一个可运行版本</h2><p>生成完成后，经过结构检查的自包含应用会在受限沙箱中显示。</p></div>
+                    <div>
+                      <div className="preview-empty-mark">↗</div>
+                      <h2>等待第一个可运行版本</h2>
+                      <p>
+                        生成完成后，经过结构检查的自包含应用会在受限沙箱中显示。
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>
             )}
             {activeTab === "code" && (
-              <pre className="panel-surface code-view">{acceptedHtml || "// 生成并通过验证后，代码将在这里显示。"}</pre>
+              <pre className="panel-surface code-view">
+                {acceptedHtml || "// 生成并通过验证后，代码将在这里显示。"}
+              </pre>
             )}
             {activeTab === "logs" && (
-              <div className="panel-surface"><div className="log-list">{events.length ? events.map((event) => (
-                <div className="log-item" key={`${event.runId}-${event.sequence}`}><strong>#{event.sequence} · {event.type}</strong><p>{event.stage ? `${STAGE_META[event.stage].agent} · ` : ""}{event.timestamp}</p></div>
-              )) : <div className="log-item"><strong>尚无事件</strong><p>启动生成后，这里会按顺序显示经过 Schema 校验的事件。</p></div>}</div></div>
+              <div className="panel-surface">
+                <div className="log-list">
+                  {events.length ? (
+                    events.map((event) => (
+                      <div
+                        className="log-item"
+                        key={`${event.runId}-${event.sequence}`}
+                      >
+                        <strong>
+                          #{event.sequence} · {event.type}
+                        </strong>
+                        <p>
+                          {event.stage
+                            ? `${STAGE_META[event.stage].agent} · `
+                            : ""}
+                          {event.timestamp}
+                        </p>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="log-item">
+                      <strong>尚无事件</strong>
+                      <p>
+                        启动生成后，这里会按顺序显示经过 Schema 校验的事件。
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
             )}
             {activeTab === "validation" && (
-              <div className="panel-surface"><div className="validation-list">{checks.length ? checks.map((check) => (
-                <div className="validation-item" key={check.id}><span className={`check-dot ${check.status}`} /><div><strong>{check.label}</strong><p>{check.detail}</p></div></div>
-              )) : <div className="validation-item"><span className="check-dot warning" /><div><strong>尚未验证</strong><p>验证器将在构建完成后检查结构、安全策略与交互目标。</p></div></div>}</div></div>
+              <div className="panel-surface">
+                <div className="validation-list">
+                  {checks.length ? (
+                    checks.map((check) => (
+                      <div className="validation-item" key={check.id}>
+                        <span className={`check-dot ${check.status}`} />
+                        <div>
+                          <strong>{check.label}</strong>
+                          <p>{check.detail}</p>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="validation-item">
+                      <span className="check-dot warning" />
+                      <div>
+                        <strong>尚未验证</strong>
+                        <p>
+                          验证器将在构建完成后检查结构、安全策略与交互目标。
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
             )}
           </div>
         </section>
@@ -432,13 +564,28 @@ export function BuilderWorkspace() {
 }
 
 function stateLabel(state: StageState) {
-  return { queued: "等待中", running: "正在执行", completed: "产物已生成", failed: "执行失败", ready: "预览已验证" }[state];
+  return {
+    queued: "等待中",
+    running: "正在执行",
+    completed: "产物已生成",
+    failed: "执行失败",
+    ready: "预览已验证",
+  }[state];
 }
 
 function tabLabel(tab: InspectorTab) {
-  return { preview: "预览", code: "代码", logs: "日志", validation: "验证" }[tab];
+  return { preview: "预览", code: "代码", logs: "日志", validation: "验证" }[
+    tab
+  ];
 }
 
 function runStateLabel(state: RunState) {
-  return { idle: "等待生成", running: "Pipeline 运行中", previewing: "预览启动中", ready: "预览已就绪", failed: "生成失败", cancelled: "已取消" }[state];
+  return {
+    idle: "等待生成",
+    running: "Pipeline 运行中",
+    previewing: "预览启动中",
+    ready: "预览已就绪",
+    failed: "生成失败",
+    cancelled: "已取消",
+  }[state];
 }

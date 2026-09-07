@@ -5,11 +5,13 @@ import {
   type StageId,
 } from "@/src/lib/contracts";
 import {
-  createGeneratedApp,
-  createProductArtifacts,
-  createTechnicalPlan,
-} from "@/src/lib/fake-provider";
-import { SandboxValidationError, validateAndInstrument } from "@/src/lib/html-sandbox";
+  ModelProviderError,
+  type ModelProvider,
+} from "@/src/lib/model-provider";
+import {
+  SandboxValidationError,
+  validateAndInstrument,
+} from "@/src/lib/html-sandbox";
 
 const STEP_DELAY_MS = process.env.NODE_ENV === "test" ? 0 : 380;
 
@@ -31,12 +33,14 @@ function wait(ms: number, signal: AbortSignal) {
   });
 }
 
-export async function* runFakePipeline(
+export async function* runPipeline(
   request: RunRequest,
   signal: AbortSignal,
+  provider: ModelProvider,
 ): AsyncGenerator<RunEvent> {
   let sequence = 0;
   const runStartedAt = Date.now();
+  let currentStage: StageId = "product";
 
   const event = <T extends RunEvent>(
     value: Omit<T, "protocolVersion" | "runId" | "sequence" | "timestamp">,
@@ -53,7 +57,10 @@ export async function* runFakePipeline(
     event<Extract<RunEvent, { type: "stage.started" }>>({
       type: "stage.started",
       stage,
-      payload: { label: STAGE_META[stage].label, agent: STAGE_META[stage].agent },
+      payload: {
+        label: STAGE_META[stage].label,
+        agent: STAGE_META[stage].agent,
+      },
     });
 
   const completeStage = (stage: StageId, startedAt: number) =>
@@ -66,18 +73,19 @@ export async function* runFakePipeline(
   try {
     yield event<Extract<RunEvent, { type: "run.accepted" }>>({
       type: "run.accepted",
-      payload: { providerLabel: "Fake Provider · 确定性演示", mode: request.mode },
+      payload: { providerLabel: provider.label, mode: request.mode },
     });
 
     let startedAt = Date.now();
+    currentStage = "product";
     yield startStage("product");
     yield event<Extract<RunEvent, { type: "stage.progress" }>>({
       type: "stage.progress",
       stage: "product",
       payload: { message: "正在识别核心用户、问题与关键假设…" },
     });
-    await wait(STEP_DELAY_MS, signal);
-    const product = createProductArtifacts(request.prompt);
+    if (provider.id === "fake") await wait(STEP_DELAY_MS, signal);
+    const product = await provider.generateProduct(request.prompt, signal);
     yield event<Extract<RunEvent, { type: "artifact.completed" }>>({
       type: "artifact.completed",
       stage: "product",
@@ -86,14 +94,19 @@ export async function* runFakePipeline(
     yield completeStage("product", startedAt);
 
     startedAt = Date.now();
+    currentStage = "architecture";
     yield startStage("architecture");
     yield event<Extract<RunEvent, { type: "stage.progress" }>>({
       type: "stage.progress",
       stage: "architecture",
       payload: { message: "正在收敛交互模型、数据和组件边界…" },
     });
-    await wait(STEP_DELAY_MS, signal);
-    const technicalPlan = createTechnicalPlan(request.prompt);
+    if (provider.id === "fake") await wait(STEP_DELAY_MS, signal);
+    const technicalPlan = await provider.generateTechnicalPlan(
+      request.prompt,
+      product,
+      signal,
+    );
     yield event<Extract<RunEvent, { type: "artifact.completed" }>>({
       type: "artifact.completed",
       stage: "architecture",
@@ -102,14 +115,20 @@ export async function* runFakePipeline(
     yield completeStage("architecture", startedAt);
 
     startedAt = Date.now();
+    currentStage = "engineering";
     yield startStage("engineering");
     yield event<Extract<RunEvent, { type: "stage.progress" }>>({
       type: "stage.progress",
       stage: "engineering",
       payload: { message: "正在生成自包含的交互式微型产品…" },
     });
-    await wait(STEP_DELAY_MS, signal);
-    const app = createGeneratedApp(request.prompt);
+    if (provider.id === "fake") await wait(STEP_DELAY_MS, signal);
+    const app = await provider.generateApp(
+      request.prompt,
+      product,
+      technicalPlan,
+      signal,
+    );
     yield event<Extract<RunEvent, { type: "artifact.completed" }>>({
       type: "artifact.completed",
       stage: "engineering",
@@ -118,6 +137,7 @@ export async function* runFakePipeline(
     yield completeStage("engineering", startedAt);
 
     startedAt = Date.now();
+    currentStage = "validation";
     yield startStage("validation");
     yield event<Extract<RunEvent, { type: "stage.progress" }>>({
       type: "stage.progress",
@@ -142,7 +162,10 @@ export async function* runFakePipeline(
       payload: { totalDurationMs: Date.now() - runStartedAt },
     });
   } catch (error) {
-    if (signal.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+    if (
+      signal.aborted ||
+      (error instanceof DOMException && error.name === "AbortError")
+    ) {
       yield event<Extract<RunEvent, { type: "run.cancelled" }>>({
         type: "run.cancelled",
         payload: { message: "生成已由用户取消。" },
@@ -151,11 +174,20 @@ export async function* runFakePipeline(
     }
 
     const message = error instanceof Error ? error.message : "未知错误";
-    const code = error instanceof SandboxValidationError ? "sandbox_rejected" : "internal";
+    const code =
+      error instanceof SandboxValidationError
+        ? "sandbox_rejected"
+        : error instanceof ModelProviderError
+          ? error.code
+          : "internal";
+    const retryable =
+      error instanceof ModelProviderError
+        ? error.retryable
+        : code !== "sandbox_rejected";
     yield event<Extract<RunEvent, { type: "stage.failed" }>>({
       type: "stage.failed",
-      stage: "validation",
-      payload: { code, message, retryable: code !== "sandbox_rejected" },
+      stage: currentStage,
+      payload: { code, message, retryable },
     });
   }
 }

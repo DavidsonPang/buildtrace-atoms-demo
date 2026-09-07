@@ -1,6 +1,6 @@
 # BuildTrace 技术设计文档
 
-> 状态：D2 已确认（2026-09-07）  
+> 状态：D2、D3 已确认（2026-09-07）
 > 关联需求：[product-requirements.md](./product-requirements.md)  
 > 关键决策：[ADR-0001：生成沙箱化的自包含 HTML](./decisions/0001-sandboxed-self-contained-html.md)
 
@@ -11,7 +11,7 @@ BuildTrace 采用 **本地优先的 Next.js 应用 + 服务端 Agent Orchestrato
 - 使用 React + TypeScript 实现工作台；
 - 使用 Next.js App Router 和 Route Handler 承载全栈应用；
 - 使用 Tailwind CSS 建立视觉系统；
-- 通过 Provider Adapter 隔离具体模型，供应商在 D3 决定；
+- 通过 Provider Adapter 隔离具体模型；D3 选择 DeepSeek V4 Flash，Fake Provider 保留为确定性测试替身；
 - 使用 Zod 校验请求、事件、产物和模型结构化输出；
 - 一个 `POST` 请求通过 NDJSON 流式返回事件；
 - Pipeline 固定为 Product → Architecture → Engineering → Validation；
@@ -40,7 +40,7 @@ BuildTrace 采用 **本地优先的 Next.js 应用 + 服务端 Agent Orchestrato
 - 生成应用不使用远程后端，也不动态安装依赖；
 - 服务端任务与一次请求生命周期绑定，不假设已有持久任务队列；
 - MVP 项目数据只保存在当前浏览器；
-- 模型和部署平台分别留到 D3、D4 决定；
+- 模型已在 D3 锁定为 `deepseek-v4-flash`，部署平台留到 D4 决定；
 - 公共访问无需登录，费用保护必须同时依赖应用限制与 Provider 硬预算。
 
 ### 2.3 非目标
@@ -60,7 +60,7 @@ flowchart LR
     R --> G[请求保护层]
     G --> O[Agent Orchestrator]
     O --> P[Provider Adapter]
-    P --> L[待选择的 LLM Provider]
+    P --> L[DeepSeek V4 Flash]
     O --> Z[Zod 契约校验]
     O --> V[确定性验证器]
     W --> S[带版本的浏览器存储]
@@ -83,16 +83,16 @@ flowchart LR
 
 ### 3.1 模块职责
 
-| 模块 | 负责 | 不负责 |
-| --- | --- | --- |
-| Workspace | 收集输入、消费事件、展示产物、版本、日志和预览 | 直接调用模型或执行生成的服务端代码 |
-| Request Guards | 校验请求、限制大小/时间/频率、创建请求上下文 | 决定产品内容 |
-| Orchestrator | 执行真实阶段、发送事件、错误分类、响应取消 | 持久化项目或伪造进度 |
-| Provider Adapter | 发起模型调用并统一结构化结果和错误 | 管理 UI 或项目状态 |
-| Contract Validation | 拒绝不合规请求、事件和模型产物 | 判断主观产品质量 |
-| Deterministic Validator | 解析输出、执行安全策略、插入监测代码并验证运行 | 运行任意后端代码 |
-| Browser Storage | 保存受限项目快照和版本 | 提供跨设备持久化 |
-| Preview Sandbox | 运行已接受的 HTML 并报告运行状态 | 访问父页面、凭证、Cookie 或网络 |
+| 模块                    | 负责                                           | 不负责                             |
+| ----------------------- | ---------------------------------------------- | ---------------------------------- |
+| Workspace               | 收集输入、消费事件、展示产物、版本、日志和预览 | 直接调用模型或执行生成的服务端代码 |
+| Request Guards          | 校验请求、限制大小/时间/频率、创建请求上下文   | 决定产品内容                       |
+| Orchestrator            | 执行真实阶段、发送事件、错误分类、响应取消     | 持久化项目或伪造进度               |
+| Provider Adapter        | 发起模型调用并统一结构化结果和错误             | 管理 UI 或项目状态                 |
+| Contract Validation     | 拒绝不合规请求、事件和模型产物                 | 判断主观产品质量                   |
+| Deterministic Validator | 解析输出、执行安全策略、插入监测代码并验证运行 | 运行任意后端代码                   |
+| Browser Storage         | 保存受限项目快照和版本                         | 提供跨设备持久化                   |
+| Preview Sandbox         | 运行已接受的 HTML 并报告运行状态               | 访问父页面、凭证、Cookie 或网络    |
 
 Next.js Route Handler 基于标准 Web `Request` 和 `Response` API，适合实现可迁移的流式接口。但它仍是公开 HTTP Endpoint，必须视为不可信边界。参见 [Next.js Backend for Frontend 指南](https://nextjs.org/docs/app/guides/backend-for-frontend)。
 
@@ -175,11 +175,7 @@ queued | running → cancelled
 `POST /api/runs` 返回 `application/x-ndjson`，每一行都是可以独立解析的 JSON 事件。相比浏览器 `EventSource`，NDJSON 更适合携带结构化 `POST` 请求体的一次性生成任务。
 
 ```ts
-type StageId =
-  | "product"
-  | "architecture"
-  | "engineering"
-  | "validation";
+type StageId = "product" | "architecture" | "engineering" | "validation";
 
 type RunEvent =
   | Event<"run.accepted", RunMetadata>
@@ -226,11 +222,13 @@ const RunRequestSchema = z.object({
   mode: z.enum(["quick", "guided"]),
   action: z.enum(["initial", "continue", "retry", "rebuild"]),
   prompt: z.string().trim().min(10).max(2_000),
-  context: z.object({
-    audience: z.string().max(300).optional(),
-    primaryAction: z.string().max(300).optional(),
-    constraints: z.array(z.string().max(200)).max(8).optional(),
-  }).optional(),
+  context: z
+    .object({
+      audience: z.string().max(300).optional(),
+      primaryAction: z.string().max(300).optional(),
+      constraints: z.array(z.string().max(200)).max(8).optional(),
+    })
+    .optional(),
   retryFrom: StageIdSchema.optional(),
   rebuildFrom: StageIdSchema.optional(),
   artifacts: ArtifactSnapshotSchema.optional(),
@@ -265,14 +263,23 @@ const ProductAgentOutputSchema = z.object({
 ```ts
 const TechnicalPlanSchema = z.object({
   interactionModel: z.string().min(20).max(600),
-  dataModel: z.array(z.object({
-    name: z.string().max(80),
-    fields: z.array(z.string().max(120)).max(12),
-  })).max(8),
-  components: z.array(z.object({
-    name: z.string().max(80),
-    responsibility: z.string().max(240),
-  })).min(2).max(12),
+  dataModel: z
+    .array(
+      z.object({
+        name: z.string().max(80),
+        fields: z.array(z.string().max(120)).max(12),
+      }),
+    )
+    .max(8),
+  components: z
+    .array(
+      z.object({
+        name: z.string().max(80),
+        responsibility: z.string().max(240),
+      }),
+    )
+    .min(2)
+    .max(12),
   behaviors: z.array(z.string().max(240)).min(1).max(12),
   validationPlan: z.array(z.string().max(240)).min(1).max(10),
 });
@@ -293,37 +300,32 @@ const GeneratedAppSchema = z.object({
 
 ## 8. Provider Adapter
 
-模型选型留到 D3，应用只依赖内部接口：
+模型已在 D3 锁定为 DeepSeek V4 Flash。应用仍只依赖内部接口，Fake Provider 与真实 Provider 使用同一 Orchestrator：
 
 ```ts
 interface ModelProvider {
-  generateStructured<T>(input: {
-    operation: "product" | "architecture" | "engineering";
-    schema: z.ZodType<T>;
-    systemPrompt: string;
-    userPayload: unknown;
-    maxOutputTokens: number;
-    signal: AbortSignal;
-  }): Promise<{
-    data: T;
-    providerRequestId?: string;
-    usage?: TokenUsage;
-    latencyMs: number;
-  }>;
+  readonly id: "fake" | "deepseek";
+  readonly label: string;
+  generateProduct(prompt, signal): Promise<ProductAgentOutput>;
+  generateTechnicalPlan(prompt, product, signal): Promise<TechnicalPlan>;
+  generateApp(prompt, product, technicalPlan, signal): Promise<GeneratedApp>;
 }
 ```
 
+DeepSeek 实现通过 `https://api.deepseek.com/responses` 调用 Responses API，并为三个阶段分别发送由 Zod Schema 转换的 JSON Schema。初次 Spike 证明 3,000 Token 会在 Architecture 阶段截断包含推理 Token 的响应，因此 Product、Architecture、Engineering 的最大输出调整为 8,000、8,000、24,000 Token。Product 与 Architecture 默认超时 45 秒；ROI Spike 证明复杂页面的 Engineering 可能超过 45 秒，因此该阶段单独使用 75 秒上限，Route 的部署时长声明为 180 秒。Key 只从服务端 `DEEPSEEK_API_KEY` 读取。官方能力与接口依据见 [DeepSeek Responses API](https://api-docs.deepseek.com/guides/responses_api/) 和 [模型与价格](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)。
+
 错误统一映射：
 
-| 类型 | 是否可重试 | 用户行为 |
-| --- | --- | --- |
-| `rate_limited` | 有限重试 | 展示等待建议，不静默循环 |
-| `timeout` | 是 | 重试失败阶段或查看预置项目 |
-| `invalid_output` | 结构修复一次 | 明确说明契约错误 |
-| `content_rejected` | 否 | 建议修改输入 |
-| `quota_exhausted` | 否 | 关闭实时生成并提供预置项目 |
-| `provider_unavailable` | 有限重试 | 保留已有产物并提供重试 |
-| `internal` | 不自动重试 | 返回请求 ID，不暴露敏感详情 |
+| 类型                      | 是否可重试   | 用户行为                      |
+| ------------------------- | ------------ | ----------------------------- |
+| `provider_rate_limited`   | 有限重试     | 展示等待建议，不静默循环      |
+| `provider_timeout`        | 是           | 重试失败阶段或查看预置项目    |
+| `provider_invalid_output` | 结构修复一次 | 明确说明契约错误              |
+| `provider_rejected`       | 按状态决定   | 建议修改输入或重试            |
+| `provider_configuration`  | 否           | 检查开关、Key、次数或预算限制 |
+| `provider_authentication` | 否           | 检查服务端 Key 与模型权限     |
+| `provider_unavailable`    | 有限重试     | 保留已有产物并提供重试        |
+| `internal`                | 不自动重试   | 返回请求 ID，不暴露敏感详情   |
 
 ## 9. 生成内容安全边界
 
@@ -389,18 +391,18 @@ Frame 因不透明 Origin 必须使用 `postMessage(..., "*")`，所以消息中
 
 验证结果必须来自可复现证据，而不是通用 LLM 评价。
 
-| 检查 | 是否阻塞 | 证据 |
-| --- | --- | --- |
-| 请求与产物 Schema | 是 | Zod 解析结果 |
-| 输出大小和单文件限制 | 是 | 字节数与文档数量 |
-| HTML 可解析且有可见主体 | 是 | AST 检查 |
-| 禁止元素、URL 和能力 | 是 | 命中的 Policy Rule ID |
-| 需求映射存在 | 是 | ID 属于 Product Brief 验收项 |
-| Preview 在时限内 ready | 是 | 带 Run Token 的 iframe 握手 |
-| 启动期间无运行错误 | 是 | `error` / `unhandledrejection` 事件 |
-| 至少存在有效交互 | 是 | 静态交互目标 + Runtime Interaction Signal |
-| 响应式启发式检查 | 警告 | viewport meta 与溢出检查 |
-| 主观产品质量评价 | 信息 | 如增加模型或人工评价，必须明确标记 |
+| 检查                    | 是否阻塞 | 证据                                      |
+| ----------------------- | -------- | ----------------------------------------- |
+| 请求与产物 Schema       | 是       | Zod 解析结果                              |
+| 输出大小和单文件限制    | 是       | 字节数与文档数量                          |
+| HTML 可解析且有可见主体 | 是       | AST 检查                                  |
+| 禁止元素、URL 和能力    | 是       | 命中的 Policy Rule ID                     |
+| 需求映射存在            | 是       | ID 属于 Product Brief 验收项              |
+| Preview 在时限内 ready  | 是       | 带 Run Token 的 iframe 握手               |
+| 启动期间无运行错误      | 是       | `error` / `unhandledrejection` 事件       |
+| 至少存在有效交互        | 是       | 静态交互目标 + Runtime Interaction Signal |
+| 响应式启发式检查        | 警告     | viewport meta 与溢出检查                  |
+| 主观产品质量评价        | 信息     | 如增加模型或人工评价，必须明确标记        |
 
 Preview Ready Timeout 与模型生成超时分开计算。不能只用 iframe `load` 事件作为成功，因为浏览器出于安全原因不会通过该事件暴露所有加载错误。
 
@@ -435,6 +437,8 @@ Preview Ready Timeout 与模型生成超时分开计算。不能只用 iframe `l
 - 客户端只收到通用错误和 Request ID；
 - Provider Secret、原始响应和完整 Prompt 不进入客户端包和普通服务端日志；
 - Feature Flag 可关闭实时生成并展示有明确标记的预置项目。
+- 本地阶段限制单进程最多 15 次真实运行、单浏览器会话最多 3 次；幂等键重复请求不重复计数。
+- 根据 DeepSeek 人民币高峰单价和响应 `usage` 保守累计应用侧费用，并为每次接受的完整运行（含最多一次结构化修复）预留 ¥0.65；15 次预留总额为 ¥9.75，低于 D3 的 ¥10 上限。
 
 ### 12.2 应用之外执行
 
@@ -445,7 +449,7 @@ Preview Ready Timeout 与模型生成超时分开计算。不能只用 iframe `l
 
 ### 12.3 已知限制
 
-内存限流无法在多个 Serverless Instance 之间保持全局一致，也可以被绕过。它只能作为纵深防御，不能成为唯一预算边界。D3 必须确认 Provider 硬预算；生产方案需要 Redis 等共享配额存储和带身份的租户限额。
+内存限流和费用累计无法在多个 Serverless Instance 之间保持全局一致，进程重启后也会清零。它只能作为本地阶段的纵深防御，不能成为唯一预算边界。D3 已确认 ¥10 上限；D4 前仍需在 DeepSeek 控制台确认账户额度或告警，并决定公共 Demo 是否开放实时生成。生产方案需要 Redis 等共享配额存储和带身份的租户限额。
 
 ## 13. 前端结构
 
@@ -510,47 +514,47 @@ BuilderPage
 
 ### 14.4 真实模型冒烟测试
 
-D3 后使用五个固定提示词测试选定模型，记录 Schema 成功率、延迟、验证结果、运行就绪、交互和人工观察。Fake Provider E2E 只能证明应用行为确定，不能作为真实模型质量证据。
+D3 已选定 `deepseek-v4-flash`。本机 Key 配置完成后，先用两个固定提示词做 Provider Spike，再使用五个固定提示词记录 Schema 成功率、延迟、Token、估算费用、验证结果、运行就绪、交互和人工观察。Fake Provider E2E 只能证明应用行为确定，不能作为真实模型质量证据。
 
 ## 15. 需求追踪
 
-| 需求 | 主要实现 | 验证方式 |
-| --- | --- | --- |
-| M1 创建模式和示例 | `IdeaComposer`、Request Schema | Playwright 快速/引导流程 |
-| M2 真实分阶段 Pipeline | Orchestrator、Event Writer、Reducer | 契约 + 集成 + E2E |
-| M3 结构化产物 | Zod Output、`ArtifactCard`、Editor | Schema + 查看/编辑 E2E |
-| M4 可运行微型产品 | Engineering Agent、HTML Contract | 五提示词 + Sandbox Run |
-| M5 Preview 与验证 | Validator、iframe、Inspector | 安全单测 + E2E |
-| M6 下游重建 | Artifact Revision、Stale Reducer | 状态单测 + Rebuild E2E |
-| M7 失败/取消/重试 | Error Normalizer、AbortSignal、Retry API | 故障注入 + E2E |
-| M8 持久化与保护 | `ProjectStore`、Request Guards、Preset Flag | 存储/安全测试 + Bundle Scan |
+| 需求                   | 主要实现                                    | 验证方式                    |
+| ---------------------- | ------------------------------------------- | --------------------------- |
+| M1 创建模式和示例      | `IdeaComposer`、Request Schema              | Playwright 快速/引导流程    |
+| M2 真实分阶段 Pipeline | Orchestrator、Event Writer、Reducer         | 契约 + 集成 + E2E           |
+| M3 结构化产物          | Zod Output、`ArtifactCard`、Editor          | Schema + 查看/编辑 E2E      |
+| M4 可运行微型产品      | Engineering Agent、HTML Contract            | 五提示词 + Sandbox Run      |
+| M5 Preview 与验证      | Validator、iframe、Inspector                | 安全单测 + E2E              |
+| M6 下游重建            | Artifact Revision、Stale Reducer            | 状态单测 + Rebuild E2E      |
+| M7 失败/取消/重试      | Error Normalizer、AbortSignal、Retry API    | 故障注入 + E2E              |
+| M8 持久化与保护        | `ProjectStore`、Request Guards、Preset Flag | 存储/安全测试 + Bundle Scan |
 
 ## 16. 最高风险与验证顺序
 
-| 顺序 | 假设 | 扩展 UI 前的验证方式 |
-| ---: | --- | --- |
-| 1 | 选定模型能稳定返回受限结构化产物和 HTML | D3 后用两个固定提示词做 Provider Spike |
-| 2 | 部署链路不会缓存或提前终止 NDJSON | 本地测试后，在 D4 预览部署中验证 |
-| 3 | 受限 CSP 与 iframe 仍支持预期交互 | 使用固定 HTML Fixture 测试 ready/error/interaction |
-| 4 | Brief 重建能改变结果且不破坏版本 | Fake Provider 集成测试 + Playwright |
-| 5 | 未登录公共 Demo 的成本限制足够 | D3 用量估算、Provider 硬预算和限额测试 |
+| 顺序 | 假设                                    | 扩展 UI 前的验证方式                               |
+| ---: | --------------------------------------- | -------------------------------------------------- |
+|    1 | 选定模型能稳定返回受限结构化产物和 HTML | D3 后用两个固定提示词做 Provider Spike             |
+|    2 | 部署链路不会缓存或提前终止 NDJSON       | 本地测试后，在 D4 预览部署中验证                   |
+|    3 | 受限 CSP 与 iframe 仍支持预期交互       | 使用固定 HTML Fixture 测试 ready/error/interaction |
+|    4 | Brief 重建能改变结果且不破坏版本        | Fake Provider 集成测试 + Playwright                |
+|    5 | 未登录公共 Demo 的成本限制足够          | D3 用量估算、Provider 硬预算和限额测试             |
 
 流式行为必须在最终部署平台实测，因为代理或 Serverless Runtime 可能缓存或中断响应。相关注意事项见 [Next.js Streaming 部署说明](https://nextjs.org/docs/app/guides/self-hosting)。
 
 ## 17. 原型到生产的演进
 
-| MVP | 生产方向 |
-| --- | --- |
-| 请求生命周期内顺序编排 | 持久工作流引擎 + Stage Job Queue |
-| 一次 NDJSON 响应 | 可重连、可回放的持久 Event Log |
-| 单进程幂等窗口 | 数据库幂等键 + 分布式锁 |
-| 浏览器项目快照 | Postgres 元数据 + 对象存储 Artifact |
-| 一份自包含 HTML | 隔离的多文件 Build Service + Artifact Registry |
-| 同应用 `srcdoc` 沙箱 | 独立 Origin Preview + Container 隔离 |
-| 本地尽力限流 | 按 Tenant、IP、预算执行的 Redis/Edge Quota |
-| 单一 Provider Adapter | 按能力路由并支持 Fallback |
-| 基础请求日志 | Trace、Metric、结构化日志、成本归因和告警 |
-| 无身份 | 鉴权、租户、角色、权限与审计 |
+| MVP                    | 生产方向                                       |
+| ---------------------- | ---------------------------------------------- |
+| 请求生命周期内顺序编排 | 持久工作流引擎 + Stage Job Queue               |
+| 一次 NDJSON 响应       | 可重连、可回放的持久 Event Log                 |
+| 单进程幂等窗口         | 数据库幂等键 + 分布式锁                        |
+| 浏览器项目快照         | Postgres 元数据 + 对象存储 Artifact            |
+| 一份自包含 HTML        | 隔离的多文件 Build Service + Artifact Registry |
+| 同应用 `srcdoc` 沙箱   | 独立 Origin Preview + Container 隔离           |
+| 本地尽力限流           | 按 Tenant、IP、预算执行的 Redis/Edge Quota     |
+| 单一 Provider Adapter  | 按能力路由并支持 Fallback                      |
+| 基础请求日志           | Trace、Metric、结构化日志、成本归因和告警      |
+| 无身份                 | 鉴权、租户、角色、权限与审计                   |
 
 生产环境中，`POST /runs` 应只负责校验、入队并立即返回 Run ID。Worker 通过 Lease 领取 Stage，持久化产物修订和事件，并通过可重连 Stream 发布进度。幂等键和 Attempt Number 保证安全重试，避免浏览器断开或 Serverless Timeout 决定长任务生命周期。
 
@@ -572,7 +576,7 @@ D3 后使用五个固定提示词测试选定模型，记录 Schema 成功率、
 
 当前交互是一次请求范围内、以服务端到客户端为主的 Stream。NDJSON 支持 `POST` 和原生 Stream，基础设施更简单；持久双向通信属于生产演进。
 
-## 19. D2 锁定结论
+## 19. D2、D3 锁定结论
 
 D2 已确认，本方案锁定：
 
@@ -584,7 +588,8 @@ D2 已确认，本方案锁定：
 - NDJSON 流式协议；
 - 受限的自包含 HTML 和 Sandbox Preview；
 - 带版本的本地优先持久化；
-- D3 前保持 Provider Neutral；
 - D2 通过后可以初始化本地 Git，并使用 Fake Provider 开始编码。
+- D3 采用 DeepSeek V4 Flash（`deepseek-v4-flash`），费用上限 ¥10；Key 只进入未追踪的 `.env.local` 或部署平台 Secret。
+- 本地保护采用 15 次单进程运行上限、3 次单会话上限、每次 ¥0.65 预算预留、最多一次结构化修复、阶段 Token 上限、产品/架构 45 秒和工程 75 秒超时。
 
-以下事项仍不锁定：模型、Provider 和预算（D3），部署平台和远程资源（D4），公开仓库配置（D5）。
+以下事项仍不锁定：部署平台和远程资源（D4），公开仓库配置（D5）。

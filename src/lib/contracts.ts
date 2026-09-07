@@ -12,6 +12,7 @@ export type StageId = z.infer<typeof StageIdSchema>;
 export const RunRequestSchema = z.object({
   protocolVersion: z.literal(1),
   runId: z.string().uuid(),
+  clientSessionId: z.string().uuid(),
   idempotencyKey: z.string().min(16).max(128),
   mode: z.enum(["quick", "guided"]),
   action: z.enum(["initial", "continue", "retry", "rebuild"]),
@@ -115,9 +116,18 @@ export const RunEventSchema = z.discriminatedUnion("type", [
     type: z.literal("artifact.completed"),
     stage: StageIdSchema,
     payload: z.discriminatedUnion("kind", [
-      z.object({ kind: z.literal("product"), artifact: ProductAgentOutputSchema }),
-      z.object({ kind: z.literal("technical-plan"), artifact: TechnicalPlanSchema }),
-      z.object({ kind: z.literal("generated-app"), artifact: GeneratedAppSchema }),
+      z.object({
+        kind: z.literal("product"),
+        artifact: ProductAgentOutputSchema,
+      }),
+      z.object({
+        kind: z.literal("technical-plan"),
+        artifact: TechnicalPlanSchema,
+      }),
+      z.object({
+        kind: z.literal("generated-app"),
+        artifact: GeneratedAppSchema,
+      }),
     ]),
   }),
   BaseEventSchema.extend({

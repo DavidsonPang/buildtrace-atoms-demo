@@ -1,0 +1,100 @@
+# BuildTrace 验证报告
+
+> 日期：2026-09-07
+> 范围：本地端到端纵向切片、DeepSeek V4 Flash Provider Spike 与五场景评测
+> 结论：本地核心生成链路通过；真实模型场景 4/5 成功，达到 PRD 的最低验收线；远程部署尚未执行。
+
+## 1. 验证口径
+
+本报告区分四类证据：
+
+- **自动测试通过**：由 Vitest、TypeScript、ESLint、Next.js Build 或 Playwright 直接验证。
+- **真实模型通过**：确实调用 `deepseek-v4-flash`，产物通过运行时 Schema 和确定性 HTML 验证。
+- **浏览器实测通过**：产物已在受限 iframe 中启动并产生可见交互变化。
+- **已知失败或限制**：保留失败样本，不把修复后的单次成功包装成从未失败。
+
+## 2. 工程自动验证
+
+| 检查               | 结果 | 证据                                                               |
+| ------------------ | ---- | ------------------------------------------------------------------ |
+| ESLint             | 通过 | `npm run lint`，0 error / 0 warning                                |
+| TypeScript         | 通过 | `npm run typecheck`                                                |
+| 单元测试           | 通过 | 4 个测试文件、10 个测试通过                                        |
+| 生产构建           | 通过 | `npm run build`；主页为 Static，`/api/runs` 为 Dynamic             |
+| Fake Provider E2E  | 通过 | Chromium 核心流程 1/1 通过                                         |
+| 真实产物浏览器回放 | 通过 | 10 个交互控件；输入改变后结果变化；父页面显示“已就绪 · 交互已验证” |
+
+单元测试覆盖 Orchestrator 阶段顺序与取消、DeepSeek Responses API 请求契约、限流错误归一化、一次结构化修复、预算计数、HTML 安全策略和 Preview 注入。
+
+## 3. DeepSeek Provider 实测
+
+### 3.1 接口与配置
+
+- Provider：DeepSeek。
+- 模型：`deepseek-v4-flash`。
+- API：`POST https://api.deepseek.com/responses`。
+- 输出：由 Zod Schema 转换的 JSON Schema，收到响应后再次执行 Zod 运行时校验。
+- Pipeline：Product → Architecture → Engineering → Deterministic Validation。
+- 安全：Key 仅存在于被 Git 忽略的 `.env.local`，不进入浏览器事件、普通日志或仓库。
+
+官方资料：[DeepSeek Responses API](https://api-docs.deepseek.com/guides/responses_api/)、[模型与人民币价格](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)。
+
+### 3.2 首次 Spike 暴露的问题
+
+第一次报价场景中，Product 成功，但 Architecture 达到 3,000 Token 上限并返回 `incomplete`。这证明 Responses API 的输出窗口需要同时容纳推理与最终 JSON。调整后各阶段最大输出为：
+
+| 阶段         |     最大输出 |         超时 |
+| ------------ | -----------: | -----------: |
+| Product      |  8,000 Token |        45 秒 |
+| Architecture |  8,000 Token |        45 秒 |
+| Engineering  | 24,000 Token |        75 秒 |
+| Validation   |   不调用模型 | 本地同步验证 |
+
+### 3.3 五场景结果
+
+| 场景                 | 结果         |  总耗时 |   生成 HTML | 说明                                                       |
+| -------------------- | ------------ | ------: | ----------: | ---------------------------------------------------------- |
+| 自由职业者报价计算器 | 通过         | 70.1 秒 | 25,221 字符 | 四项验证通过；浏览器交互回放通过                           |
+| 活动报名与容量看板   | 通过         | 38.0 秒 | 16,477 字符 | 四项验证通过                                               |
+| SaaS 定价与 ROI      | 失败         |       — |           — | Product、Architecture 成功；Engineering 在旧 45 秒上限超时 |
+| 英文 B2B 潜客评估    | 通过（重试） | 78.2 秒 | 25,574 字符 | 首次 Product 非 JSON；增加受限修复后完整通过               |
+| 咖啡店团购预订       | 通过         | 61.6 秒 | 16,352 字符 | 四项验证通过                                               |
+
+结果为 **4/5（80%）**，达到 PRD“至少四个通过 Schema、沙箱、就绪、可见内容和交互检查”的最低线。活动场景的 Spike 使用了与固定英文提示词语义等价的中文描述；英文输入能力由 B2B 潜客评估场景覆盖。
+
+## 4. 确定性验证内容
+
+每个成功产物在进入 Preview 前都必须通过：
+
+1. HTML 字节大小不超过 100,000。
+2. 存在足够的可见页面主体。
+3. 至少包含一个表单或按钮交互目标。
+4. 不包含被禁止的 iframe、object、embed、外部资源、危险 URL 或顶层导航。
+5. 服务端注入限制性 CSP 和带 Run Channel Token 的 Preview Bridge。
+6. iframe 使用 `sandbox="allow-scripts"`，不授予 Same-Origin 权限。
+
+浏览器回放进一步验证了 `ready` 与 `interaction` 消息，而不是仅凭 HTML 文本推断应用可运行。
+
+## 5. 费用保护
+
+D3 确认预算上限为 ¥10。本地实现包括：
+
+- 单进程最多接受 15 次真实完整运行。
+- 单浏览器会话最多 3 次真实运行。
+- 每次接受运行预留 ¥0.65，15 次合计 ¥9.75。
+- 按 DeepSeek 人民币高峰单价和响应 `usage` 保守累计实际估算。
+- 同一幂等键重试不重复占用运行次数。
+- 结构化产物最多进行一次受限修复。
+
+这些计数目前保存在进程内，重启后会清零，因此不能作为公共部署的唯一保护。D4 前需要确认 DeepSeek 账户侧额度/告警和远程共享限流方案。
+
+## 6. 已知限制与下一步
+
+- ROI 场景没有在 75 秒新上限下重复验证，保留为真实失败样本。
+- 当前重试会重新执行完整 Pipeline；按失败阶段复用已完成上游产物尚待后续实现。
+- 浏览器项目持久化、Brief 编辑与下游失效重建尚未实现。
+- 没有远程部署证据，NDJSON 在目标平台的代理/Serverless 行为尚未验证。
+- 没有把 Provider 用量暴露给客户端；费用应以 DeepSeek 控制台账单为最终依据。
+- 内存次数与费用计数不是分布式配额，公共 Demo 需要更强的外部保护或关闭匿名实时生成。
+
+下一步先进入 D4 部署决策；未经确认不创建远程项目、环境变量或公开地址。
