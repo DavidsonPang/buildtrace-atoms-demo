@@ -4,7 +4,9 @@ test("从报价想法生成可交互的沙箱预览", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator('main[data-hydrated="true"]')).toBeVisible();
 
-  await expect(page.getByRole("heading", { name: /把想法变成/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "对话记录" })).toBeVisible();
+  await expect(page.getByLabel("产品想法")).toBeVisible();
+  await expect(page.locator(".composer textarea")).toHaveCount(1);
   await expect(page.getByText("本地模式 · 未连接云端")).toBeVisible();
   await page.getByRole("button", { name: "项目报价计算器" }).click();
   await page.getByRole("button", { name: /开始生成/ }).click();
@@ -116,12 +118,14 @@ test("用自然语言生成新版本，并在虚拟文件树中切换源码", as
 
   const instruction = "增加税费说明，并保留现有报价计算能力。";
   await page.getByLabel("后续修改要求").fill(instruction);
-  await page.getByRole("button", { name: "生成新版本" }).click();
+  await page.getByRole("button", { name: "发送修改" }).click();
 
   const preview = page.frameLocator('iframe[title="生成产品预览"]');
   await expect(preview.locator("#revision-request")).toContainText(instruction);
   await expect(page.getByRole("button", { name: /v2/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /v1/ })).toBeVisible();
+  await expect(page.getByText(instruction, { exact: true })).toBeVisible();
+  await expect(page.locator(".composer textarea")).toHaveCount(1);
 
   await page.getByRole("tab", { name: "代码" }).click();
   await expect(page.getByText("虚拟文件视图", { exact: true })).toBeVisible();

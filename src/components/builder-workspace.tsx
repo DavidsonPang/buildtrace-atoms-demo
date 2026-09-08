@@ -140,6 +140,8 @@ export function BuilderWorkspace() {
   const [revisionInstruction, setRevisionInstruction] = useState("");
   const [activeSourceFile, setActiveSourceFile] =
     useState<VirtualSourceFile["name"]>("index.html");
+  const [submittedMessage, setSubmittedMessage] = useState("");
+  const [submittedAsRevision, setSubmittedAsRevision] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string>("");
@@ -197,6 +199,8 @@ export function BuilderWorkspace() {
     setRebuildPending(false);
     setRevisionInstruction("");
     setActiveSourceFile("index.html");
+    setSubmittedMessage("");
+    setSubmittedAsRevision(false);
 
     productRef.current = snapshot.product;
     technicalPlanRef.current = snapshot.technicalPlan;
@@ -455,6 +459,8 @@ export function BuilderWorkspace() {
           previousActiveVersionRef.current = pendingVersion;
           pendingVersionRef.current = null;
           setRevisionInstruction("");
+          setSubmittedMessage("");
+          setSubmittedAsRevision(false);
         }
         setPreviewReady(true);
         setRunState("ready");
@@ -632,6 +638,10 @@ export function BuilderWorkspace() {
     } else if (action !== "retry") {
       revisionInstructionRef.current = "";
     }
+    setSubmittedMessage(normalizedRevisionInstruction || normalizedPrompt);
+    setSubmittedAsRevision(
+      action === "revise" || Boolean(normalizedRevisionInstruction),
+    );
     previousActiveVersionRef.current =
       versions.find((version) => version.id === activeVersionId) ??
       versions.at(-1) ??
@@ -775,6 +785,12 @@ export function BuilderWorkspace() {
     "rebuilding",
     "retrying",
   ].includes(runState);
+  const hasSuccessfulVersion = Boolean(activeVersionId && acceptedHtml);
+  const composerText = hasSuccessfulVersion ? revisionInstruction : prompt;
+  const composerLimit = hasSuccessfulVersion ? 800 : 2000;
+  const composerReady = hasSuccessfulVersion
+    ? revisionInstruction.trim().length >= 3
+    : prompt.trim().length >= 10;
 
   const saveBriefRevision = (nextProduct: ProductAgentOutput) => {
     productRef.current = nextProduct;
@@ -822,6 +838,8 @@ export function BuilderWorkspace() {
     setRebuildPending(false);
     setRevisionInstruction("");
     setActiveSourceFile("index.html");
+    setSubmittedMessage("");
+    setSubmittedAsRevision(false);
     revisionInstructionRef.current = "";
     setError("");
   };
@@ -902,6 +920,8 @@ export function BuilderWorkspace() {
       setEditingBrief(false);
       setRevisionInstruction("");
       setActiveSourceFile("index.html");
+      setSubmittedMessage("");
+      setSubmittedAsRevision(false);
       revisionInstructionRef.current = "";
       setRunState("previewing");
       setCurrentProgress("预置项目已通过服务端确定性验证，正在启动预览…");
@@ -934,78 +954,37 @@ export function BuilderWorkspace() {
       </header>
 
       <section className="workspace" aria-label="BuildTrace 产品工作台">
-        <aside className="stage-rail">
-          <p className="rail-kicker">产品流水线</p>
-          <div className="stage-list" aria-label="生成阶段">
-            {stageOrder.map((stage, index) => (
-              <div className={`stage-item ${stages[stage]}`} key={stage}>
-                <span className="stage-dot" aria-hidden="true">
-                  {stages[stage] === "completed" || stages[stage] === "ready"
-                    ? "✓"
-                    : `0${index + 1}`}
-                </span>
-                <span>
-                  <span className="stage-name">{STAGE_META[stage].short}</span>
-                  <span className="stage-state">
-                    {stateLabel(stages[stage])}
-                  </span>
-                </span>
-              </div>
-            ))}
-          </div>
-          {versions.length ? (
-            <div className="version-section" aria-label="最近成功版本">
-              <p>最近成功版本</p>
-              {[...versions].reverse().map((version) => (
-                <button
-                  className={`version-button ${activeVersionId === version.id ? "active" : ""}`}
-                  key={version.id}
-                  onClick={() => restoreVersion(version)}
-                  type="button"
-                >
-                  <span>v{version.revision}</span>
-                  <small>{version.product.productBrief.productName}</small>
-                </button>
-              ))}
-            </div>
-          ) : null}
-          <div className="rail-note">
-            <strong>透明，但不打断</strong>
-            快速模式会自动推进。每个状态都来自真实事件，不展示隐藏推理。
-          </div>
-        </aside>
-
         <section className="workbench">
           <div className="composer">
-            <p className="eyebrow">AI 产品团队 · Fast by default</p>
-            <h1>
-              把想法变成
-              <br />
-              可以操作的产品。
-            </h1>
-            <p className="composer-copy">
-              描述一个业务想法。专业 Agent
-              会完成产品定义、交互规划、构建和验证，你可以随时查看产物。
-            </p>
-            <div className="mode-row" aria-label="生成模式">
-              <button
-                className={`mode-button ${mode === "quick" ? "active" : ""}`}
-                disabled={isRunning || !hydrated}
-                onClick={() => setMode("quick")}
-                type="button"
-              >
-                快速模式
-              </button>
-              <button
-                className={`mode-button ${mode === "guided" ? "active" : ""}`}
-                disabled={isRunning || !hydrated}
-                onClick={() => setMode("guided")}
-                type="button"
-              >
-                引导模式
-              </button>
+            <div className="composer-context">
+              <span>{hasSuccessfulVersion ? "继续修改" : "创建产品"}</span>
+              <small>
+                {hasSuccessfulVersion
+                  ? `基于 v${activeSuccessfulVersion?.revision ?? 1} 生成新版本`
+                  : "Product → Architecture → Engineering → Validation"}
+              </small>
             </div>
-            {mode === "guided" ? (
+            {!hasSuccessfulVersion ? (
+              <div className="mode-row" aria-label="生成模式">
+                <button
+                  className={`mode-button ${mode === "quick" ? "active" : ""}`}
+                  disabled={isRunning || !hydrated}
+                  onClick={() => setMode("quick")}
+                  type="button"
+                >
+                  快速模式
+                </button>
+                <button
+                  className={`mode-button ${mode === "guided" ? "active" : ""}`}
+                  disabled={isRunning || !hydrated}
+                  onClick={() => setMode("guided")}
+                  type="button"
+                >
+                  引导模式
+                </button>
+              </div>
+            ) : null}
+            {!hasSuccessfulVersion && mode === "guided" ? (
               <div className="guided-context">
                 <label>
                   目标用户（可选）
@@ -1042,14 +1021,25 @@ export function BuilderWorkspace() {
             ) : null}
             <div className="prompt-box">
               <textarea
-                aria-label="产品想法"
-                maxLength={2000}
-                onChange={(event) => setPrompt(event.target.value)}
-                placeholder="例如：为自由职业者创建一个透明的项目报价计算器…"
-                value={prompt}
+                aria-label={hasSuccessfulVersion ? "后续修改要求" : "产品想法"}
+                disabled={isRunning}
+                maxLength={composerLimit}
+                onChange={(event) =>
+                  hasSuccessfulVersion
+                    ? setRevisionInstruction(event.target.value)
+                    : setPrompt(event.target.value)
+                }
+                placeholder={
+                  hasSuccessfulVersion
+                    ? "描述要修改的文字、样式或功能…"
+                    : "描述你想创建的产品…"
+                }
+                value={composerText}
               />
               <div className="prompt-actions">
-                <span className="prompt-count">{prompt.length} / 2000</span>
+                <span className="prompt-count">
+                  {composerText.length} / {composerLimit}
+                </span>
                 {isRunning ? (
                   <button
                     className="cancel-button"
@@ -1061,87 +1051,140 @@ export function BuilderWorkspace() {
                 ) : (
                   <button
                     className="build-button"
-                    disabled={!hydrated || prompt.trim().length < 10}
-                    onClick={() => void startRun()}
+                    disabled={!hydrated || !composerReady}
+                    onClick={() =>
+                      hasSuccessfulVersion
+                        ? void startRun({
+                            action: "revise",
+                            revisionInstruction,
+                          })
+                        : void startRun()
+                    }
                     type="button"
                   >
                     {auth.status !== "unavailable" &&
                     auth.status !== "signed_in"
                       ? "登录后生成 ↗"
-                      : mode === "guided"
-                        ? "生成 Product Brief ↗"
-                        : "开始生成 ↗"}
+                      : hasSuccessfulVersion
+                        ? "发送修改 ↗"
+                        : mode === "guided"
+                          ? "生成 Product Brief ↗"
+                          : "开始生成 ↗"}
                   </button>
                 )}
               </div>
             </div>
-            <div className="examples" aria-label="示例想法">
-              {examples.map((example) => (
-                <button
-                  className="example-button"
-                  key={example.label}
-                  onClick={() => setPrompt(example.prompt)}
-                  type="button"
-                >
-                  {example.label}
-                </button>
-              ))}
-              <button
-                className="example-button preset-button"
-                disabled={isRunning}
-                onClick={() => void loadPresetProject()}
-                type="button"
-              >
-                查看预置成功项目 · 零模型调用
-              </button>
-            </div>
-            {activeVersionId && acceptedHtml ? (
-              <div className="revision-composer">
-                <div className="revision-heading">
-                  <div>
-                    <strong>继续迭代当前版本</strong>
-                    <p>
-                      用自然语言描述改动；新版本成功前，当前预览不会被覆盖。
-                    </p>
-                  </div>
-                  <span>next · v{(versions.at(-1)?.revision ?? 0) + 1}</span>
-                </div>
-                <textarea
-                  aria-label="后续修改要求"
-                  disabled={isRunning}
-                  maxLength={800}
-                  onChange={(event) =>
-                    setRevisionInstruction(event.target.value)
-                  }
-                  placeholder="例如：保留现有报价流程，增加税费说明，并把结果卡片改成深色主题。"
-                  value={revisionInstruction}
-                />
-                <div className="revision-actions">
-                  <small>{revisionInstruction.length} / 800</small>
+            {!hasSuccessfulVersion ? (
+              <div className="examples" aria-label="示例想法">
+                {examples.map((example) => (
                   <button
-                    className="build-button"
-                    disabled={
-                      isRunning || revisionInstruction.trim().length < 3
-                    }
-                    onClick={() =>
-                      void startRun({
-                        action: "revise",
-                        revisionInstruction,
-                      })
-                    }
+                    className="example-button"
+                    key={example.label}
+                    onClick={() => setPrompt(example.prompt)}
                     type="button"
                   >
-                    生成新版本 ↗
+                    {example.label}
                   </button>
-                </div>
+                ))}
+                <button
+                  className="example-button preset-button"
+                  disabled={isRunning}
+                  onClick={() => void loadPresetProject()}
+                  type="button"
+                >
+                  查看预置成功项目 · 零模型调用
+                </button>
               </div>
             ) : null}
           </div>
 
           <div className="activity" aria-live="polite">
             <div className="section-heading">
-              <h2>Agent 产物</h2>
+              <div>
+                <p>BUILDTRACE DEVELOPER</p>
+                <h1>对话记录</h1>
+              </div>
               <span className="provider-label">{providerLabel}</span>
+            </div>
+
+            <div className="conversation-list" aria-label="项目对话记录">
+              {!versions.length && runState === "idle" ? (
+                <article className="message assistant-message welcome-message">
+                  <span className="message-avatar">B</span>
+                  <div>
+                    <strong>你想构建什么？</strong>
+                    <p>
+                      描述产品、目标用户和核心操作。我会展示必要的 Agent
+                      进度，并把结果放到右侧预览。
+                    </p>
+                  </div>
+                </article>
+              ) : null}
+              {versions.map((version, index) => (
+                <div className="conversation-turn" key={version.id}>
+                  <article className="message user-message">
+                    <div>
+                      <span>
+                        {version.revisionInstruction ? "修改要求" : "需求"}
+                      </span>
+                      <p>
+                        {version.revisionInstruction ||
+                          (index === 0
+                            ? version.prompt
+                            : "调整 Product Brief，并重新构建受影响的内容。")}
+                      </p>
+                    </div>
+                  </article>
+                  <article className="message assistant-message">
+                    <span className="message-avatar">B</span>
+                    <div>
+                      <div className="message-meta">
+                        <strong>
+                          {version.product.productBrief.productName}
+                        </strong>
+                        <button
+                          className={
+                            activeVersionId === version.id ? "active" : ""
+                          }
+                          onClick={() => restoreVersion(version)}
+                          type="button"
+                        >
+                          v{version.revision}
+                        </button>
+                      </div>
+                      <p>{version.generatedApp.summary}</p>
+                    </div>
+                  </article>
+                </div>
+              ))}
+              {submittedMessage &&
+              runState !== "idle" &&
+              runState !== "ready" ? (
+                <article className="message user-message pending-message">
+                  <div>
+                    <span>{submittedAsRevision ? "修改要求" : "需求"}</span>
+                    <p>{submittedMessage}</p>
+                  </div>
+                </article>
+              ) : null}
+              {runState !== "idle" && runState !== "ready" ? (
+                <article className="message assistant-message pipeline-message">
+                  <span className="message-avatar">B</span>
+                  <div>
+                    <strong>
+                      {currentProgress || runStateLabel(runState)}
+                    </strong>
+                    <div className="inline-stages" aria-label="生成阶段">
+                      {stageOrder.map((stage) => (
+                        <span className={stages[stage]} key={stage}>
+                          {STAGE_META[stage].short} ·{" "}
+                          {stateLabel(stages[stage])}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </article>
+              ) : null}
             </div>
 
             {storageError && (
@@ -1181,12 +1224,10 @@ export function BuilderWorkspace() {
                 ) : null}
               </div>
             )}
-            {currentProgress && (
-              <div className="live-progress">{currentProgress}</div>
-            )}
             {!product && !technicalPlan && !generatedApp && !isRunning ? (
               <div className="empty-activity">
-                选择一个示例开始，阶段产物会在这里按真实完成顺序出现。
+                Product
+                Brief、技术方案和构建结果会作为本轮回复的可展开附件显示。
               </div>
             ) : null}
 
