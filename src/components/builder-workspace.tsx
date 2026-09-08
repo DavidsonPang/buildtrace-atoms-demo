@@ -235,16 +235,24 @@ export function BuilderWorkspace() {
     window.sessionStorage.setItem(sessionStorageKey, sessionId);
     sessionIdRef.current = sessionId;
 
-    const restored = loadProject(window.localStorage, "guest");
-    const localProjects = listLocalProjects(window.localStorage, "guest");
     queueMicrotask(() => {
       if (cancelled) return;
-      if (restored.error || localProjects.error) {
-        setStorageError(restored.error ?? localProjects.error ?? "");
+      try {
+        const restored = loadProject(window.localStorage, "guest");
+        const localProjects = listLocalProjects(window.localStorage, "guest");
+        if (restored.error || localProjects.error) {
+          setStorageError(restored.error ?? localProjects.error ?? "");
+        }
+        applySnapshot(restored.snapshot ?? createEmptyProjectSnapshot());
+        setProjectSummaries(localProjects.projects);
+      } catch {
+        applySnapshot(createEmptyProjectSnapshot());
+        setStorageError(
+          "无法读取浏览器缓存，已进入空白项目；登录后仍可尝试恢复云端数据。",
+        );
+      } finally {
+        setHydrated(true);
       }
-      applySnapshot(restored.snapshot ?? createEmptyProjectSnapshot());
-      setProjectSummaries(localProjects.projects);
-      setHydrated(true);
     });
 
     return () => {

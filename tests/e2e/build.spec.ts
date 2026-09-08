@@ -8,6 +8,8 @@ test("从报价想法生成可交互的沙箱预览", async ({ page }) => {
   await expect(page.getByLabel("产品想法")).toBeVisible();
   await expect(page.locator(".composer textarea")).toHaveCount(1);
   await expect(page.getByText("本地模式 · 未连接云端")).toBeVisible();
+  await expect(page.getByText("正在恢复会话…")).toHaveCount(0);
+  await expect(page.locator(".project-switcher")).toBeEnabled();
   await page.getByRole("button", { name: "项目报价计算器" }).click();
   await page.getByRole("button", { name: /开始生成/ }).click();
 
@@ -203,5 +205,36 @@ test("创建多个项目后可切换，并在刷新后恢复当前项目", async
     page.frameLocator('iframe[title="生成产品预览"]').getByRole("heading", {
       name: /清楚报价/,
     }),
+  ).toBeVisible();
+});
+
+test("窄屏下对话附件、检查器标签和产物文档保持可用", async ({ page }) => {
+  await page.setViewportSize({ width: 560, height: 900 });
+  await page.goto("/");
+  await expect(page.locator('main[data-hydrated="true"]')).toBeVisible();
+  await page
+    .getByRole("button", { name: "查看预置成功项目 · 零模型调用" })
+    .click();
+  await expect(page.getByText("预览已就绪", { exact: true })).toBeVisible();
+
+  const attachments = page.getByLabel("v1 产物");
+  await expect(
+    attachments.getByRole("button", { name: "Product Brief · 可编辑" }),
+  ).toBeVisible();
+  await expect(
+    attachments.getByRole("button", { name: "Technical Plan · 查看" }),
+  ).toBeVisible();
+  await attachments
+    .getByRole("button", { name: "Product Brief · 可编辑" })
+    .click();
+
+  for (const tab of ["预览", "产物", "代码", "日志", "验证"]) {
+    await expect(
+      page.getByRole("tab", { name: tab, exact: true }),
+    ).toBeVisible();
+  }
+  await expect(page.getByRole("heading", { name: "SwiftQuote" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "编辑结构化 Brief" }),
   ).toBeVisible();
 });

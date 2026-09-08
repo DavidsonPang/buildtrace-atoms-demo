@@ -17,6 +17,7 @@ type AuthStatus = "loading" | "unavailable" | "signed_out" | "signed_in";
 
 type AuthContextValue = {
   status: AuthStatus;
+  restoreWarning: string;
   user: User | null;
   accessToken: string | null;
   client: SupabaseClient | null;
@@ -26,6 +27,7 @@ type AuthContextValue = {
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+const AUTH_RESTORE_FALLBACK_MS = 10_000;
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const client = useMemo(() => getSupabaseBrowserClient(), []);
@@ -33,27 +35,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     client ? "loading" : "unavailable",
   );
   const [session, setSession] = useState<Session | null>(null);
+  const [restoreWarning, setRestoreWarning] = useState("");
 
   useEffect(() => {
     if (!client) return;
     let active = true;
-
-    void client.auth.getSession().then(({ data }) => {
+    const fallback = setTimeout(() => {
       if (!active) return;
-      setSession(data.session);
-      setStatus(data.session ? "signed_in" : "signed_out");
-    });
+      setSession(null);
+      setRestoreWarning("会话恢复超时，请重新登录。");
+      setStatus("signed_out");
+    }, AUTH_RESTORE_FALLBACK_MS);
+
+    void client.auth
+      .getSession()
+      .then(({ data, error }) => {
+        if (!active) return;
+        clearTimeout(fallback);
+        setSession(data.session);
+        setRestoreWarning(error ? "会话恢复失败，请重新登录。" : "");
+        setStatus(data.session ? "signed_in" : "signed_out");
+      })
+      .catch(() => {
+        if (!active) return;
+        clearTimeout(fallback);
+        setSession(null);
+        setRestoreWarning("会话恢复失败，请重新登录。");
+        setStatus("signed_out");
+      });
 
     const { data: listener } = client.auth.onAuthStateChange(
-      (_event, nextSession) => {
+      (event, nextSession) => {
         if (!active) return;
+        clearTimeout(fallback);
         setSession(nextSession);
+        if (nextSession || event !== "INITIAL_SESSION") {
+          setRestoreWarning("");
+        }
         setStatus(nextSession ? "signed_in" : "signed_out");
       },
     );
 
     return () => {
       active = false;
+      clearTimeout(fallback);
       listener.subscription.unsubscribe();
     };
   }, [client]);
@@ -61,6 +86,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AuthContextValue>(
     () => ({
       status,
+      restoreWarning,
       user: session?.user ?? null,
       accessToken: session?.access_token ?? null,
       client,
@@ -88,7 +114,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (error) throw new Error(authErrorMessage(error.message));
       },
     }),
-    [client, session, status],
+    [client, restoreWarning, session, status],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -172,7 +198,12 @@ export function AuthControls() {
   }
 
   return (
-    <>
+    <div className="auth-entry">
+      {auth.restoreWarning ? (
+        <span className="auth-recovery-warning" role="status">
+          {auth.restoreWarning}
+        </span>
+      ) : null}
       <button
         className="auth-trigger"
         onClick={() => setOpen(true)}
@@ -273,7 +304,7 @@ export function AuthControls() {
           </section>
         </div>
       ) : null}
-    </>
+    </div>
   );
 }
 
