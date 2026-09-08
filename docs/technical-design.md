@@ -490,20 +490,20 @@ Run、Event、用量和审计记录仍需迁移到持久任务系统。浏览器
 
 ## 13. 前端结构
 
-工作台由一个只消费已校验 `RunEvent` 的 Reducer 驱动：
+工作台由一个只消费已校验 `RunEvent` 的状态层驱动。布局采用对话区与结果检查器两栏，而不是常驻三栏工程控制台：
 
 ```text
 BuilderPage
 ├── ProjectHeader
-├── StageRail
-│   ├── StageStatusItem
-│   └── VersionList
-├── Workbench
-│   ├── IdeaComposer
-│   ├── RevisionComposer
-│   ├── AgentActivity
-│   └── ArtifactCard
-│       └── ProductBriefEditor
+├── ConversationWorkbench
+│   ├── ConversationHistory
+│   │   ├── UserMessage
+│   │   └── AgentMessage
+│   │       ├── VersionRestore
+│   │       ├── InlineStageStatus
+│   │       └── ArtifactCard
+│   │           └── ProductBriefEditor
+│   └── UnifiedComposer
 └── Inspector
     ├── PreviewPanel
     ├── CodePanel
@@ -517,6 +517,8 @@ BuilderPage
 - **Server Event State**：Run、Stage、Artifact、公开日志与 Validation；
 - **Local UI State**：活动标签、展开卡片、编辑草稿、预览宽度；
 - **Persisted Project State**：已接受产物和成功版本。
+
+对话记录不引入新的持久化事实来源，而是从最近成功 `ProjectVersion` 确定性投影：首版显示原始 Prompt，后续版显示 `revisionInstruction`，结构化 Brief 重建使用明确的系统描述。运行中的用户消息使用瞬时状态，成功后由版本记录接管。这样既避免维护第二套消息数据库，也使刷新恢复与版本恢复保持一致。
 
 客户端先缓存不完整 NDJSON 文本，遇到换行后再逐行解析；每个事件都必须通过 Schema 才能进入 Reducer。流中断时进入 `transport_interrupted`，此前已接受产物继续保留。
 
@@ -550,6 +552,7 @@ BuilderPage
 - 编辑 Brief → 下游 stale → 重建 → 新版本；
 - 自然语言修改 → 完整重建 → 新版本 → 旧版本仍可回滚；
 - Code 面板在 HTML、CSS、JavaScript 三个虚拟文件间切换；
+- 首次输入与后续修改共用一个 Composer，成功版本在对话流中按顺序出现；
 - 运行错误显示在 Logs 并阻止 Ready；
 - 刷新后恢复最近成功状态；
 - 键盘访问和状态 Live Region；

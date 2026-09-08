@@ -8,7 +8,7 @@ BuildTrace 是一个“从想法到可运行产品”的透明 AI Builder：用�
 
 1. 点击“预置成功项目”可以零成本立即体验完整结果；也可以选择示例或输入至少 10 个字符的产品想法。
 2. 注册或登录后点击“开始生成”，观察 Product、Architecture、Engineering、Validation 四个阶段的真实事件与中间产物。
-3. 在右侧操作预览；成功后可用自然语言继续修改并生成可回滚的新版本，也可在 Code 标签中切换查看虚拟的 HTML、CSS 和 JavaScript 文件。
+3. 左侧上方会形成连续对话记录，底部的同一个输入框用于首次需求和后续修改；右侧操作预览，也可在 Code 标签中切换查看虚拟的 HTML、CSS 和 JavaScript 文件。
 
 在线生成使用 DeepSeek V4 Flash，通常需要约 40–90 秒。公开 Demo 要求登录，并按 IP 限制为每 10 分钟 3 次生成请求，以控制滥用和模型费用；预置成功项目无需登录或模型调用。
 
@@ -19,6 +19,7 @@ BuildTrace 是一个“从想法到可运行产品”的透明 AI Builder：用�
 - Zod 校验请求、Agent 结构化输出和流式 NDJSON 事件。
 - DeepSeek Provider Adapter、分阶段超时、错误归一化和一次受限格式修复。
 - 快速模式与引导模式；引导模式会在 Product Brief 后暂停，等待用户确认。
+- 对话式两栏工作台：左侧上方是需求与版本回复记录、底部是统一输入框，右侧专注预览与检查。
 - Product Brief 结构化编辑、下游失效标记和从 Architecture 开始的局部重建。
 - 成功版本上的自然语言迭代：合并当前 Product Brief 后完整重跑四阶段，新版本 Ready 前保留旧预览。
 - Code 标签把同一份自包含 HTML 只读投影为 `index.html`、`styles.css`、`app.js`；界面明确标注其为虚拟文件视图。
