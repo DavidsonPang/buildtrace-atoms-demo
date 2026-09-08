@@ -50,7 +50,8 @@ type StageState =
   | "stale"
   | "cancelled"
   | "ready";
-type InspectorTab = "preview" | "code" | "logs" | "validation";
+type InspectorTab = "preview" | "artifacts" | "code" | "logs" | "validation";
+type ArtifactKind = "product" | "technical";
 type RunState =
   | "idle"
   | "running"
@@ -121,6 +122,7 @@ export function BuilderWorkspace() {
   const [acceptedHtml, setAcceptedHtml] = useState("");
   const [checks, setChecks] = useState<ValidationCheck[]>([]);
   const [activeTab, setActiveTab] = useState<InspectorTab>("preview");
+  const [activeArtifact, setActiveArtifact] = useState<ArtifactKind>("product");
   const [channelToken, setChannelToken] = useState("");
   const [previewReady, setPreviewReady] = useState(false);
   const [previewInteraction, setPreviewInteraction] = useState(false);
@@ -210,6 +212,8 @@ export function BuilderWorkspace() {
     setActiveSourceFile("index.html");
     setSubmittedMessage("");
     setSubmittedAsRevision(false);
+    setActiveTab("preview");
+    setActiveArtifact("product");
 
     productRef.current = snapshot.product;
     technicalPlanRef.current = snapshot.technicalPlan;
@@ -620,6 +624,8 @@ export function BuilderWorkspace() {
       setRunState("awaiting_user");
       setCurrentProgress("Product Brief 已生成，请检查或编辑后开始构建。");
       setEditingBrief(true);
+      setActiveArtifact("product");
+      setActiveTab("artifacts");
     }
     if (event.type === "run.completed") {
       setRunState("previewing");
@@ -987,6 +993,20 @@ export function BuilderWorkspace() {
     setSubmittedAsRevision(false);
     revisionInstructionRef.current = "";
     setError("");
+  };
+
+  const openVersionArtifact = (
+    version: ProjectVersion,
+    artifact: ArtifactKind,
+  ) => {
+    if (activeVersionId !== version.id) restoreVersion(version);
+    setActiveArtifact(artifact);
+    setActiveTab("artifacts");
+  };
+
+  const openVersionValidation = (version: ProjectVersion) => {
+    if (activeVersionId !== version.id) restoreVersion(version);
+    setActiveTab("validation");
   };
 
   const resetLocalProject = () => {
@@ -1387,6 +1407,36 @@ export function BuilderWorkspace() {
                         </button>
                       </div>
                       <p>{version.generatedApp.summary}</p>
+                      <div
+                        className="message-artifacts"
+                        aria-label={`v${version.revision} 产物`}
+                      >
+                        <button
+                          onClick={() =>
+                            openVersionArtifact(version, "product")
+                          }
+                          type="button"
+                        >
+                          <span aria-hidden="true">P</span>
+                          Product Brief · 可编辑
+                        </button>
+                        <button
+                          onClick={() =>
+                            openVersionArtifact(version, "technical")
+                          }
+                          type="button"
+                        >
+                          <span aria-hidden="true">T</span>
+                          Technical Plan · 查看
+                        </button>
+                        <button
+                          onClick={() => openVersionValidation(version)}
+                          type="button"
+                        >
+                          <span aria-hidden="true">✓</span>
+                          Validation · 已通过
+                        </button>
+                      </div>
                     </div>
                   </article>
                 </div>
@@ -1416,6 +1466,20 @@ export function BuilderWorkspace() {
                         </span>
                       ))}
                     </div>
+                    {runState === "awaiting_user" && product ? (
+                      <div className="message-artifacts">
+                        <button
+                          onClick={() => {
+                            setActiveArtifact("product");
+                            setActiveTab("artifacts");
+                          }}
+                          type="button"
+                        >
+                          <span aria-hidden="true">P</span>
+                          Product Brief · 待确认
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 </article>
               ) : null}
@@ -1460,130 +1524,10 @@ export function BuilderWorkspace() {
             )}
             {!product && !technicalPlan && !generatedApp && !isRunning ? (
               <div className="empty-activity">
-                Product
-                Brief、技术方案和构建结果会作为本轮回复的可展开附件显示。
+                Product Brief、技术方案和验证结果会附在 BuildTrace
+                回复中，并在右侧面板查看。
               </div>
             ) : null}
-
-            {product && (
-              <details className="activity-card" open>
-                <summary>
-                  <span className="artifact-title">
-                    <span className="artifact-icon">P</span>Product Brief
-                  </span>
-                  <span className="artifact-status">
-                    已完成 · 修订 {briefRevision || 1}
-                  </span>
-                </summary>
-                {editingBrief ? (
-                  <ProductBriefEditor
-                    key={`${product.productBrief.productName}-${briefRevision}`}
-                    onCancel={() => setEditingBrief(false)}
-                    onSave={saveBriefRevision}
-                    product={product}
-                  />
-                ) : (
-                  <div className="artifact-body">
-                    <strong>{product.productBrief.productName}</strong>
-                    <p>{product.productBrief.valueProposition}</p>
-                    <p>
-                      <strong>核心用户：</strong>
-                      {product.productBrief.primaryUser}
-                    </p>
-                    <p>
-                      <strong>核心操作：</strong>
-                      {product.productBrief.primaryAction}
-                    </p>
-                    <ul>
-                      {product.productBrief.functionalRequirements.map(
-                        (item) => (
-                          <li key={item}>{item}</li>
-                        ),
-                      )}
-                    </ul>
-                    {!isRunning ? (
-                      <button
-                        className="text-button"
-                        onClick={() => setEditingBrief(true)}
-                        type="button"
-                      >
-                        编辑结构化 Brief
-                      </button>
-                    ) : null}
-                  </div>
-                )}
-              </details>
-            )}
-
-            {product &&
-            !editingBrief &&
-            (runState === "awaiting_user" || rebuildPending) ? (
-              <div className="rebuild-banner">
-                <div>
-                  <strong>
-                    {runState === "awaiting_user"
-                      ? "Brief 等待确认"
-                      : "下游产物已标记为过期"}
-                  </strong>
-                  <p>
-                    将重新执行 Architecture → Engineering →
-                    Validation；新版本成功前保留当前预览。
-                  </p>
-                </div>
-                <button
-                  className="build-button"
-                  onClick={() =>
-                    void startRun({
-                      action: "rebuild",
-                      rebuildFrom: "architecture",
-                    })
-                  }
-                  type="button"
-                >
-                  {runState === "awaiting_user"
-                    ? "确认并开始构建"
-                    : "重建受影响阶段"}
-                </button>
-              </div>
-            ) : null}
-
-            {technicalPlan && (
-              <details className="activity-card">
-                <summary>
-                  <span className="artifact-title">
-                    <span className="artifact-icon">A</span>Technical Plan
-                  </span>
-                  <span className="artifact-status">已完成 · 可检查</span>
-                </summary>
-                <div className="artifact-body">
-                  <p>{technicalPlan.interactionModel}</p>
-                  <ul>
-                    {technicalPlan.components.map((item) => (
-                      <li key={item.name}>
-                        <strong>{item.name}</strong>：{item.responsibility}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </details>
-            )}
-
-            {generatedApp && (
-              <details className="activity-card">
-                <summary>
-                  <span className="artifact-title">
-                    <span className="artifact-icon">E</span>Generated App
-                  </span>
-                  <span className="artifact-status">
-                    {checks.length ? "已通过确定性验证" : "已生成 · 等待验证"}
-                  </span>
-                </summary>
-                <div className="artifact-body">
-                  <strong>{generatedApp.title}</strong>
-                  <p>{generatedApp.summary}</p>
-                </div>
-              </details>
-            )}
           </div>
         </section>
 
@@ -1591,7 +1535,13 @@ export function BuilderWorkspace() {
           <header className="inspector-header">
             <div className="tabs" role="tablist" aria-label="结果检查器">
               {(
-                ["preview", "code", "logs", "validation"] as InspectorTab[]
+                [
+                  "preview",
+                  "artifacts",
+                  "code",
+                  "logs",
+                  "validation",
+                ] as InspectorTab[]
               ).map((tab) => (
                 <button
                   aria-selected={activeTab === tab}
@@ -1647,6 +1597,176 @@ export function BuilderWorkspace() {
                         生成完成后，经过结构检查的自包含应用会在受限沙箱中显示。
                       </p>
                     </div>
+                  </div>
+                )}
+              </div>
+            )}
+            {activeTab === "artifacts" && (
+              <div className="panel-surface artifact-panel">
+                <header className="artifact-panel-header">
+                  <div>
+                    <span>当前版本产物</span>
+                    <strong>
+                      {product?.productBrief.productName ?? "尚未生成产物"}
+                    </strong>
+                  </div>
+                  {activeSuccessfulVersion ? (
+                    <b>v{activeSuccessfulVersion.revision}</b>
+                  ) : briefRevision ? (
+                    <b>修订 {briefRevision}</b>
+                  ) : null}
+                </header>
+
+                <div
+                  className="artifact-switcher"
+                  role="tablist"
+                  aria-label="产物类型"
+                >
+                  <button
+                    aria-selected={activeArtifact === "product"}
+                    className={activeArtifact === "product" ? "active" : ""}
+                    disabled={!product}
+                    onClick={() => setActiveArtifact("product")}
+                    role="tab"
+                    type="button"
+                  >
+                    Product Brief
+                  </button>
+                  <button
+                    aria-selected={activeArtifact === "technical"}
+                    className={activeArtifact === "technical" ? "active" : ""}
+                    disabled={!technicalPlan}
+                    onClick={() => setActiveArtifact("technical")}
+                    role="tab"
+                    type="button"
+                  >
+                    Technical Plan
+                  </button>
+                </div>
+
+                {activeArtifact === "product" && product ? (
+                  <section className="artifact-document">
+                    {editingBrief ? (
+                      <ProductBriefEditor
+                        key={`${product.productBrief.productName}-${briefRevision}`}
+                        onCancel={() => setEditingBrief(false)}
+                        onSave={saveBriefRevision}
+                        product={product}
+                      />
+                    ) : (
+                      <>
+                        <div className="artifact-document-heading">
+                          <div>
+                            <span>PRODUCT BRIEF</span>
+                            <h2>{product.productBrief.productName}</h2>
+                          </div>
+                          {!isRunning ? (
+                            <button
+                              className="secondary-button"
+                              onClick={() => setEditingBrief(true)}
+                              type="button"
+                            >
+                              编辑结构化 Brief
+                            </button>
+                          ) : null}
+                        </div>
+                        <p className="artifact-lead">
+                          {product.productBrief.valueProposition}
+                        </p>
+                        <div className="artifact-fact-grid">
+                          <div>
+                            <span>核心用户</span>
+                            <p>{product.productBrief.primaryUser}</p>
+                          </div>
+                          <div>
+                            <span>核心操作</span>
+                            <p>{product.productBrief.primaryAction}</p>
+                          </div>
+                        </div>
+                        <ArtifactList
+                          items={product.productBrief.functionalRequirements}
+                          title="功能要求"
+                        />
+                        <ArtifactList
+                          items={product.productBrief.acceptanceCriteria}
+                          title="验收标准"
+                        />
+                        {product.productBrief.constraints.length ? (
+                          <ArtifactList
+                            items={product.productBrief.constraints}
+                            title="约束"
+                          />
+                        ) : null}
+                      </>
+                    )}
+
+                    {product &&
+                    !editingBrief &&
+                    (runState === "awaiting_user" || rebuildPending) ? (
+                      <div className="rebuild-banner">
+                        <div>
+                          <strong>
+                            {runState === "awaiting_user"
+                              ? "Brief 等待确认"
+                              : "下游产物已标记为过期"}
+                          </strong>
+                          <p>
+                            将重新执行 Architecture → Engineering →
+                            Validation；新版本成功前保留当前预览。
+                          </p>
+                        </div>
+                        <button
+                          className="build-button"
+                          onClick={() =>
+                            void startRun({
+                              action: "rebuild",
+                              rebuildFrom: "architecture",
+                            })
+                          }
+                          type="button"
+                        >
+                          {runState === "awaiting_user"
+                            ? "确认并开始构建"
+                            : "重建受影响阶段"}
+                        </button>
+                      </div>
+                    ) : null}
+                  </section>
+                ) : activeArtifact === "technical" && technicalPlan ? (
+                  <section className="artifact-document">
+                    <div className="artifact-document-heading">
+                      <div>
+                        <span>TECHNICAL PLAN</span>
+                        <h2>实现方案</h2>
+                      </div>
+                      <em>只读</em>
+                    </div>
+                    <p className="artifact-lead">
+                      {technicalPlan.interactionModel}
+                    </p>
+                    <div className="artifact-section">
+                      <h3>组件职责</h3>
+                      <div className="component-list">
+                        {technicalPlan.components.map((item) => (
+                          <div key={item.name}>
+                            <strong>{item.name}</strong>
+                            <p>{item.responsibility}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <ArtifactList
+                      items={technicalPlan.behaviors}
+                      title="关键行为"
+                    />
+                    <ArtifactList
+                      items={technicalPlan.validationPlan}
+                      title="验证计划"
+                    />
+                  </section>
+                ) : (
+                  <div className="artifact-panel-empty">
+                    该产物尚未生成。运行完成后可从对话回复中打开。
                   </div>
                 )}
               </div>
@@ -1779,9 +1899,26 @@ function stateLabel(state: StageState) {
 }
 
 function tabLabel(tab: InspectorTab) {
-  return { preview: "预览", code: "代码", logs: "日志", validation: "验证" }[
-    tab
-  ];
+  return {
+    preview: "预览",
+    artifacts: "产物",
+    code: "代码",
+    logs: "日志",
+    validation: "验证",
+  }[tab];
+}
+
+function ArtifactList({ items, title }: { items: string[]; title: string }) {
+  return (
+    <div className="artifact-section">
+      <h3>{title}</h3>
+      <ul>
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function runStateLabel(state: RunState) {

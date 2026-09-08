@@ -40,6 +40,10 @@ test("引导模式在 Product Brief 后暂停并从 Architecture 继续", async 
   await expect(
     page.getByText("Product Brief 已生成，请检查或编辑后开始构建。"),
   ).toBeVisible();
+  await expect(page.getByRole("tab", { name: "产物" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await page.getByRole("button", { name: "取消", exact: true }).click();
   await expect(page.getByText("Brief 等待确认")).toBeVisible();
   await page.getByRole("button", { name: "确认并开始构建" }).click();
@@ -61,6 +65,7 @@ test("编辑 Brief 后只重建下游，生成新版本并在刷新后恢复", a
     preview.getByRole("heading", { name: /清楚报价/ }),
   ).toBeVisible();
 
+  await page.getByRole("button", { name: "Product Brief · 可编辑" }).click();
   await page.getByRole("button", { name: "编辑结构化 Brief" }).click();
   await page
     .getByLabel("功能要求（每行一项）")
@@ -106,6 +111,13 @@ test("预置成功项目不调用模型即可进入可交互预览", async ({ pa
     }),
   ).toBeVisible();
   await expect(page.getByText("预览已就绪", { exact: true })).toBeVisible();
+  await expect(page.locator(".activity-card")).toHaveCount(0);
+  await page.getByRole("button", { name: "Technical Plan · 查看" }).click();
+  await expect(page.getByRole("tab", { name: "产物" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByRole("heading", { name: "实现方案" })).toBeVisible();
 });
 
 test("用自然语言生成新版本，并在虚拟文件树中切换源码", async ({ page }) => {
@@ -126,6 +138,13 @@ test("用自然语言生成新版本，并在虚拟文件树中切换源码", as
   await expect(page.getByRole("button", { name: /v1/ })).toBeVisible();
   await expect(page.getByText(instruction, { exact: true })).toBeVisible();
   await expect(page.locator(".composer textarea")).toHaveCount(1);
+  await expect(page.locator(".message-artifacts")).toHaveCount(2);
+
+  await page
+    .getByLabel("v1 产物")
+    .getByRole("button", { name: "Technical Plan · 查看" })
+    .click();
+  await expect(page.locator(".artifact-panel-header b")).toHaveText("v1");
 
   await page.getByRole("tab", { name: "代码" }).click();
   await expect(page.getByText("虚拟文件视图", { exact: true })).toBeVisible();

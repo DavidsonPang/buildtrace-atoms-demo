@@ -193,6 +193,15 @@ exceeded action = rate_limit (HTTP 429)
 - 生成和云同步期间的切换入口会禁用，避免异步结果跨项目写入；
 - `202609080003_multi_project_titles.sql` 已执行，多项目版本已随部署 `dpl_eGLY9ycCcLgJNDGW41bJTHmZwyu1` 上线；匿名生产回放通过，登录态跨 Origin 多项目验证尚未执行。
 
+### 7.6 C8 产物信息架构重构（本地）
+
+- 删除对话底部常驻的 Product Brief、Technical Plan 和 Generated App 大卡片；每条成功版本回复改为附带三个紧凑产物入口；
+- 新增右侧 Artifacts 面板：Product Brief 可查看和结构化编辑，Technical Plan 只读，Validation 入口直接切换验证面板；
+- 点击历史版本的任一产物入口时先恢复对应版本，再展示其产物或验证，避免版本上下文错位；
+- 引导模式生成 Product Brief 后自动打开产物面板，确认构建与下游重建操作随 Brief 放置；
+- Lint、TypeScript、38 个 Vitest 单元测试和 6 条 Chromium E2E 全部通过；本地浏览器视觉检查确认对话区不再出现常驻产物卡片，产物文档在右侧可读；
+- 本增量尚未推送或部署。C9 明确确认前，生产仍保持 C7 版本。
+
 ## 8. 已知限制与下一步
 
 - ROI 场景没有在 75 秒新上限下重复验证，保留为真实失败样本。
@@ -203,6 +212,7 @@ exceeded action = rate_limit (HTTP 429)
 - HTML 首版存入 Postgres，超过 150 KB 后仍需迁移 Supabase Storage。
 - 已完成项目可在刷新后恢复；未完成运行的流式连接和一键续跑元数据不会跨刷新恢复。
 - 引导模式只允许编辑 Product Brief；Technical Plan 目前只读。
+- 产物面板首版只提供 Product Brief 与 Technical Plan；Generated App 由 Preview、Code、Validation 表达，不另设重复文档页。
 - 自然语言修改基于 Product Brief 进行语义重建，不保证未提及的代码或像素细节逐字不变；虚拟多文件视图只读，不是真实构建目录。
 - 线上只执行了一次完整真实生成，不能据此推断长期可用性或所有提示词表现。
 - 没有把 Provider 用量暴露给客户端；费用应以 DeepSeek 控制台账单为最终依据。

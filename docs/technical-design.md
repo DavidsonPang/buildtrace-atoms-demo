@@ -514,11 +514,13 @@ BuilderPage
 │   │   └── AgentMessage
 │   │       ├── VersionRestore
 │   │       ├── InlineStageStatus
-│   │       └── ArtifactCard
-│   │           └── ProductBriefEditor
+│   │       └── ArtifactAttachments
 │   └── UnifiedComposer
 └── Inspector
     ├── PreviewPanel
+    ├── ArtifactPanel
+    │   ├── ProductBriefView → ProductBriefEditor
+    │   └── TechnicalPlanView
     ├── CodePanel
     │   └── VirtualFileTree
     ├── LogsPanel
@@ -528,10 +530,12 @@ BuilderPage
 状态分为三类：
 
 - **Server Event State**：Run、Stage、Artifact、公开日志与 Validation；
-- **Local UI State**：活动标签、展开卡片、编辑草稿、预览宽度；
+- **Local UI State**：活动检查器标签、活动产物、编辑草稿、预览宽度；
 - **Persisted Project State**：已接受产物和成功版本。
 
 对话记录不引入新的持久化事实来源，而是从最近成功 `ProjectVersion` 确定性投影：首版显示原始 Prompt，后续版显示 `revisionInstruction`，结构化 Brief 重建使用明确的系统描述。运行中的用户消息使用瞬时状态，成功后由版本记录接管。这样既避免维护第二套消息数据库，也使刷新恢复与版本恢复保持一致。
+
+产物入口同样由每条 `ProjectVersion` 投影。点击附件时，客户端先恢复该版本的 Product、Technical Plan、Checks 与 Preview，再切换右侧面板，因此不会出现“对话在看 v1、产物却来自 v2”的错位。引导模式的 `run.awaiting_user` 事件会自动打开 Product Brief；确认构建和下游重建动作均放在产物面板内。Generated App 不再以独立卡片重复展示，其交付状态由 Preview、Code 与 Validation 三个检查面共同表达。
 
 客户端先缓存不完整 NDJSON 文本，遇到换行后再逐行解析；每个事件都必须通过 Schema 才能进入 Reducer。流中断时进入 `transport_interrupted`，此前已接受产物继续保留。
 
@@ -567,6 +571,7 @@ BuilderPage
 - 自然语言修改 → 完整重建 → 新版本 → 旧版本仍可回滚；
 - Code 面板在 HTML、CSS、JavaScript 三个虚拟文件间切换；
 - 首次输入与后续修改共用一个 Composer，成功版本在对话流中按顺序出现；
+- 成功回复仅显示紧凑产物附件，点击 Product/Technical/Validation 后右侧展示对应版本，且不存在常驻产物卡片；
 - 运行错误显示在 Logs 并阻止 Ready；
 - 刷新后恢复最近成功状态；
 - 新建项目 A/B → 切换回 A → 刷新后仍恢复 A；
@@ -579,20 +584,20 @@ D3 已选定 `deepseek-v4-flash`。本机 Key 配置完成后，先用两个固�
 
 ## 15. 需求追踪
 
-| 需求                   | 主要实现                                    | 验证方式                           |
-| ---------------------- | ------------------------------------------- | ---------------------------------- |
-| M1 创建模式和示例      | `IdeaComposer`、Request Schema              | Playwright 快速/引导流程           |
-| M2 真实分阶段 Pipeline | Orchestrator、Event Writer、Reducer         | 契约 + 集成 + E2E                  |
-| M3 结构化产物          | Zod Output、`ArtifactCard`、Editor          | Schema + 查看/编辑 E2E             |
-| M4 可运行微型产品      | Engineering Agent、HTML Contract            | 五提示词 + Sandbox Run             |
-| M5 Preview 与验证      | Validator、iframe、Inspector                | 安全单测 + E2E                     |
-| M6 下游重建            | Artifact Revision、Stale Reducer            | 状态单测 + Rebuild E2E             |
-| M7 失败/取消/重试      | Error Normalizer、AbortSignal、Retry API    | 故障注入 + E2E                     |
-| M8 持久化与保护        | `ProjectStore`、Request Guards、Preset Flag | 存储/安全测试 + Bundle Scan        |
-| M9 账号与云同步        | Supabase Auth、Postgres、RLS、Local Cache   | Auth 单测 + Policy 检查 + 集成 E2E |
-| M10 自然语言迭代       | Revision Composer、Orchestrator、Version    | 契约单测 + Revision E2E            |
-| M11 虚拟多文件预览     | Source Projector、Virtual File Tree         | 拆分单测 + Code Panel E2E          |
-| M12 多项目新建与切换   | Project Index、Drawer、Cloud Lazy Load      | 存储单测 + Multi-project E2E       |
+| 需求                   | 主要实现                                                   | 验证方式                           |
+| ---------------------- | ---------------------------------------------------------- | ---------------------------------- |
+| M1 创建模式和示例      | `IdeaComposer`、Request Schema                             | Playwright 快速/引导流程           |
+| M2 真实分阶段 Pipeline | Orchestrator、Event Writer、Reducer                        | 契约 + 集成 + E2E                  |
+| M3 结构化产物          | Zod Output、`ArtifactAttachments`、`ArtifactPanel`、Editor | Schema + 版本查看/编辑 E2E         |
+| M4 可运行微型产品      | Engineering Agent、HTML Contract                           | 五提示词 + Sandbox Run             |
+| M5 Preview 与验证      | Validator、iframe、Inspector                               | 安全单测 + E2E                     |
+| M6 下游重建            | Artifact Revision、Stale Reducer                           | 状态单测 + Rebuild E2E             |
+| M7 失败/取消/重试      | Error Normalizer、AbortSignal、Retry API                   | 故障注入 + E2E                     |
+| M8 持久化与保护        | `ProjectStore`、Request Guards、Preset Flag                | 存储/安全测试 + Bundle Scan        |
+| M9 账号与云同步        | Supabase Auth、Postgres、RLS、Local Cache                  | Auth 单测 + Policy 检查 + 集成 E2E |
+| M10 自然语言迭代       | Revision Composer、Orchestrator、Version                   | 契约单测 + Revision E2E            |
+| M11 虚拟多文件预览     | Source Projector、Virtual File Tree                        | 拆分单测 + Code Panel E2E          |
+| M12 多项目新建与切换   | Project Index、Drawer、Cloud Lazy Load                     | 存储单测 + Multi-project E2E       |
 
 ## 16. 最高风险与验证顺序
 
