@@ -71,6 +71,7 @@ DeepSeek Responses API
 - [身份与持久化 ADR](docs/decisions/0002-supabase-local-first-persistence.md)
 - [自然语言迭代与虚拟文件 ADR](docs/decisions/0003-natural-language-revision-and-virtual-files.md)
 - [验证报告](docs/validation-report.md)
+- [面试提交与演示清单](docs/submission-checklist.md)
 
 ## 本地运行
 
@@ -116,7 +117,7 @@ npm run build
 npm run test:e2e
 ```
 
-当前证据包括 38 个单元测试、6 条 Chromium 端到端流程、5 个固定提示词的真实模型评测，以及 Vercel 生产环境的实时生成、WAF 429、邮箱登录、跨 Origin 云恢复与匿名多项目切换验证。多项目标题 Migration 和生产部署已完成，登录态云端多项目仍需最终人工点验。尚未完成的双账号越权测试和断网重连测试会在[验证报告](docs/validation-report.md)中明确保留。
+当前证据包括 40 个单元测试、7 条 Chromium 端到端流程、5 个固定提示词的真实模型评测，以及 Vercel 生产环境的实时生成、WAF 429、邮箱登录、跨 Origin 云恢复与匿名多项目切换验证。多项目标题 Migration 和生产部署已完成，候选人也已人工确认生产登录态下的云端多项目切换与刷新恢复。尚未完成的双账号越权测试和断网重连测试会在[验证报告](docs/validation-report.md)中明确保留。
 
 ## 安全与费用边界
 
