@@ -1,8 +1,8 @@
 # BuildTrace 验证报告
 
-> 日期：2026-09-07
-> 范围：本地端到端纵向切片、DeepSeek V4 Flash Provider Spike、五场景评测、Vercel 生产部署、Supabase 身份/持久化，以及自然语言迭代与虚拟多文件源码视图的本地验证
-> 结论：本地核心生成链路通过；真实模型场景 4/5 成功，达到 PRD 的最低验收线；生产环境真实 Pipeline 与平台限流已验证。Supabase 邮箱身份、数据库写入和跨 Origin 云恢复已在线验收。自然语言迭代与虚拟文件视图已通过本地自动验证，但增量数据库 Migration 和新版生产部署尚未执行；双账号越权与断网重连仍明确保留为待验证项。
+> 日期：2026-09-08
+> 范围：本地端到端纵向切片、DeepSeek V4 Flash Provider Spike、五场景评测、Vercel 生产部署、Supabase 身份/持久化，以及自然语言迭代、虚拟多文件源码视图和多项目切换验证
+> 结论：本地核心生成链路通过；真实模型场景 4/5 成功，达到 PRD 的最低验收线；生产环境真实 Pipeline、平台限流、Supabase 邮箱身份和跨 Origin 云恢复已验证。多项目索引、新建、切换和刷新恢复已通过本地自动验证；其标题增量 Migration 和新版生产部署尚未执行，双账号越权与断网重连仍明确保留为待验证项。
 
 ## 1. 验证口径
 
@@ -19,20 +19,21 @@
 | ------------------ | ---- | ----------------------------------------------------------------------- |
 | ESLint             | 通过 | `npm run lint`，0 error / 0 warning                                     |
 | TypeScript         | 通过 | `npm run typecheck`                                                     |
-| 单元测试           | 通过 | 8 个测试文件、35 个测试通过                                             |
+| 单元测试           | 通过 | 8 个测试文件、38 个测试通过                                             |
 | 生产构建           | 通过 | `npm run build`；主页和 `/api/preset` 为 Static，`/api/runs` 为 Dynamic |
-| Fake Provider E2E  | 通过 | Chromium 用户流程 5/5 通过                                              |
+| Fake Provider E2E  | 通过 | Chromium 用户流程 6/6 通过                                              |
 | 真实产物浏览器回放 | 通过 | 10 个交互控件；输入改变后结果变化；父页面显示“已就绪 · 交互已验证”      |
 
-单元测试覆盖 Orchestrator 阶段顺序与取消、引导式暂停、局部重建、自然语言迭代、失败阶段续跑、请求快照校验、DeepSeek Responses API 请求契约、限流错误归一化、一次结构化修复、预算计数、HTML 安全策略、Preview 注入、虚拟源码拆分、本地快照的校验/迁移/账号分区/版本上限、服务端 Bearer Token 验证边界，以及 Supabase Migration 的 Grants、RLS Policy、修改元数据和 HTML 大小约束。
+单元测试覆盖 Orchestrator 阶段顺序与取消、引导式暂停、局部重建、自然语言迭代、失败阶段续跑、请求快照校验、DeepSeek Responses API 请求契约、限流错误归一化、一次结构化修复、预算计数、HTML 安全策略、Preview 注入、虚拟源码拆分、本地快照的校验/迁移/账号分区/版本上限、多项目索引与按 ID 恢复、服务端 Bearer Token 验证边界，以及 Supabase Migration 的 Grants、RLS Policy、修改元数据、项目标题和 HTML 大小约束。
 
-五条 Chromium 端到端流程分别验证：
+六条 Chromium 端到端流程分别验证：
 
 1. 快速模式生成并操作沙箱预览。
 2. 引导模式在 Product Brief 后暂停，再从 Architecture 继续。
 3. 编辑 Brief 后仅重建下游、生成 v2，并在刷新后恢复。
 4. 预置成功项目无需模型调用即可进入可交互预览。
 5. 成功版本通过自然语言修改生成 v2，并在 `index.html`、`styles.css`、`app.js` 三个虚拟源码文件间切换。
+6. 创建两个独立项目，在项目列表中切换，并在刷新后恢复最后打开项目的对话和预览。
 
 ## 3. DeepSeek Provider 实测
 
@@ -152,6 +153,7 @@ exceeded action = rate_limit (HTTP 429)
 - 未配置 Supabase 时保留 Fake Provider 本地模式，不误要求远程身份服务；
 - 配置 Supabase 后，缺少或无效 Bearer Token 的身份结果为未登录；有效 Token 的用户 ID 只取自服务端 `auth.getUser`；
 - LocalStorage v1 游客数据可迁移到 v2，用户缓存 Key 相互隔离；游客项目迁入账户时重建项目与版本 ID；
+- LocalStorage 可为同一用户索引多个项目并按项目 ID 恢复；v2 单项目快照在下一次保存时自动加入新索引；
 - SQL Migration 对 `projects` 和 `project_versions` 启用 RLS、撤销匿名权限，并为 select/insert/update/delete 建立 Owner Policy；
 - Postgres 与运行时 Schema 都限制 HTML 大小；当前修改仍先写本地，云端错误有明确状态和重试入口。
 
@@ -171,6 +173,7 @@ exceeded action = rate_limit (HTTP 429)
 - 使用第二个独立账号直接尝试读取、修改和删除账号 A 的项目，验证 Owner RLS 的动态越权结果；当前只有 Migration Policy 检查与匿名拒绝证据；
 - 真实断网编辑后恢复联网，验证自动重新拉取与同步；当前由代码路径和单元边界覆盖；
 - 新对话式布局下，登录后执行一次自然语言修改并验证云端版本写入；当前自动化覆盖 Fake Provider 全流程，生产登录态仍等待候选人视觉复核；
+- 执行 `202609080003_multi_project_titles.sql` 并部署多项目版本后，验证登录账号可以跨 Origin 列出、切换并分别恢复至少两个项目；
 
 ### 7.4 自然语言迭代增量状态
 
@@ -180,12 +183,20 @@ exceeded action = rate_limit (HTTP 429)
 - 纯函数测试证明多个 Style/Script 块会按顺序投影到三个虚拟文件，运行使用的 `acceptedHtml` 不被修改；
 - `202609070002_iteration_metadata.sql` 已应用到生产 Supabase；自然语言迭代和虚拟文件代码已随部署 `dpl_4NwgZfeYoY6Z9b6SG5cUxLCsau63` 上线；生产登录态修改仍等待候选人完成一次最终视觉/交互复核。
 
+### 7.5 多项目增量状态
+
+- 本地存储从“每用户一个快照”升级为“每用户一个项目索引 + 每项目一个独立快照”，同时保留 v1/v2 兼容读取；
+- 项目抽屉支持新建与切换，标题取最新 Product Brief 产品名，最多展示最近 50 个项目；
+- 浏览器测试证明 SwiftQuote 与 SeatFlow 的对话、版本和预览相互隔离，切回 SwiftQuote 后刷新仍恢复该项目；
+- 生成和云同步期间的切换入口会禁用，避免异步结果跨项目写入；
+- `202609080003_multi_project_titles.sql` 与云端按 ID 延迟加载代码已完成本地检查，但 Migration、生产部署和登录态跨 Origin 多项目验证尚未执行。
+
 ## 8. 已知限制与下一步
 
 - ROI 场景没有在 75 秒新上限下重复验证，保留为真实失败样本。
 - 最近一次成功产物会在新预览 Ready 后才写入版本；运行时错误会恢复旧预览，但没有覆盖所有浏览器兼容性故障。
 - Supabase 升级已完成远程数据库、邮箱身份、跨 Origin 恢复和 Vercel 重部署；双账号 RLS 动态越权与断网重连仍待验证。
-- 当前只恢复登录用户最近项目，没有多项目列表、共享、角色或多人协作。
+- 多项目列表尚未在生产登录态验证，且当前没有搜索、删除、文件夹、共享、角色或多人协作。
 - 冲突策略依赖客户端 `savedAt`，不适合不可信时钟或多人并发编辑。
 - HTML 首版存入 Postgres，超过 150 KB 后仍需迁移 Supabase Storage。
 - 已完成项目可在刷新后恢复；未完成运行的流式连接和一键续跑元数据不会跨刷新恢复。
@@ -195,4 +206,4 @@ exceeded action = rate_limit (HTTP 429)
 - 没有把 Provider 用量暴露给客户端；费用应以 DeepSeek 控制台账单为最终依据。
 - 内存次数与费用计数不是分布式配额；当前 WAF 限制单 IP 频率，但不能替代用户级配额。
 
-核心 Agent Pipeline、差异化重建、本地恢复和 Supabase 单账号生产链路已完成；自然语言迭代、虚拟源码视图与对话式工作台已完成本地自动验证和生产部署。最终登录态修改、双账号隔离与断网重连不会被当前证据夸大为已验证。
+核心 Agent Pipeline、差异化重建、本地恢复和 Supabase 单账号生产链路已完成；自然语言迭代、虚拟源码视图与对话式工作台已完成生产部署，多项目能力已完成本地自动验证。多项目生产迁移与部署、最终登录态修改、双账号隔离和断网重连不会被当前证据夸大为已验证。

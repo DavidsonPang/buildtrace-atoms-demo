@@ -20,6 +20,7 @@ BuildTrace 是一个“从想法到可运行产品”的透明 AI Builder：用�
 - DeepSeek Provider Adapter、分阶段超时、错误归一化和一次受限格式修复。
 - 快速模式与引导模式；引导模式会在 Product Brief 后暂停，等待用户确认。
 - 对话式两栏工作台：左侧上方是需求与版本回复记录、底部是统一输入框，右侧专注预览与检查。
+- 顶部项目切换器与侧边抽屉：可创建多个独立项目，在项目间恢复各自的对话、产物、版本和预览；运行或同步期间禁止切换。
 - Product Brief 结构化编辑、下游失效标记和从 Architecture 开始的局部重建。
 - 成功版本上的自然语言迭代：合并当前 Product Brief 后完整重跑四阶段，新版本 Ready 前保留旧预览。
 - Code 标签把同一份自包含 HTML 只读投影为 `index.html`、`styles.css`、`app.js`；界面明确标注其为虚拟文件视图。
@@ -28,8 +29,8 @@ BuildTrace 是一个“从想法到可运行产品”的透明 AI Builder：用�
 - `iframe sandbox="allow-scripts"` 隔离运行，使用带随机 Channel Token 的 `postMessage` 验证就绪、交互和运行时错误。
 - 三个一键示例、生成取消、阶段产物、代码、事件日志、验证面板和 HTML 下载。
 - Supabase Auth 邮箱注册、登录、会话恢复和退出；服务端生成接口重新校验 Bearer Token。
-- Supabase Postgres 保存项目元数据、Agent 产物、首版 HTML 和最近 3 个成功版本；Grants + Owner RLS 隔离用户数据。
-- 按用户分区的 LocalStorage 版本化快照：Schema 校验、损坏数据安全降级、断网恢复和重新联网同步。
+- Supabase Postgres 保存多个项目的标题、元数据、Agent 产物、首版 HTML 和各自最近 3 个成功版本；Grants + Owner RLS 隔离用户数据。
+- 按用户分区的 LocalStorage 项目索引与独立快照：兼容旧版单项目缓存，并支持 Schema 校验、损坏数据安全降级、断网恢复和重新联网同步。
 - Preview 只有在 iframe 报告 Ready 后才提交新版本；新产物运行失败时保留最近一次成功预览。
 - 明确标注的预置成功项目，通过静态 API 返回，不调用模型，保证评审者可以零成本进入完整体验。
 - 应用侧会话/预算保护，以及 Vercel WAF 的 IP 固定窗口限流。
@@ -115,7 +116,7 @@ npm run build
 npm run test:e2e
 ```
 
-当前证据包括 35 个单元测试、5 条 Chromium 端到端流程、5 个固定提示词的真实模型评测，以及 Vercel 生产环境的实时生成、WAF 429、邮箱登录与跨 Origin 云恢复验证。自然语言迭代和虚拟多文件视图已完成本地验证，生产启用前还需执行增量 Migration。尚未完成的双账号越权测试和断网重连测试会在[验证报告](docs/validation-report.md)中明确保留。
+当前证据包括 38 个单元测试、6 条 Chromium 端到端流程、5 个固定提示词的真实模型评测，以及 Vercel 生产环境的实时生成、WAF 429、邮箱登录与跨 Origin 云恢复验证。多项目能力已完成本地验证，生产启用前还需执行标题增量 Migration 并重新部署。尚未完成的双账号越权测试和断网重连测试会在[验证报告](docs/validation-report.md)中明确保留。
 
 ## 安全与费用边界
 
@@ -128,7 +129,7 @@ npm run test:e2e
 
 ## 已知限制
 
-- 登录用户的最近项目与 3 个成功版本同步到 Supabase；当前没有多项目列表、团队共享、角色权限或多人协作。
+- 项目抽屉最多展示最近 50 个项目；当前没有搜索、删除、文件夹、团队共享、角色权限或多人协作。
 - 云端冲突暂按 `savedAt` Last-Write-Wins；生产多人编辑需要服务端 Revision 与显式冲突处理。
 - 生成 HTML 首版存入 Postgres 且限制为 150 KB；体积扩大后需要迁移到 Supabase Storage。
 - 已完成的项目可在刷新后恢复；但刷新发生在未完成运行中时，不承诺恢复流式连接或一键续跑元数据。

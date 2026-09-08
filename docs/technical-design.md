@@ -22,7 +22,8 @@ BuildTrace 采用 **本地优先的 Next.js 应用 + 服务端 Agent Orchestrato
 - Code 面板把同一份自包含 HTML 只读投影为 `index.html`、`styles.css`、`app.js`，不引入第二套运行事实；
 - 使用确定性规则验证 HTML、安全策略、预览就绪和交互；
 - 使用 Supabase Auth 保存身份与会话，Postgres 保存项目和最近三个成功版本；
-- 使用按用户隔离的版本化 LocalStorage 作为本地缓存和断网恢复层；
+- 顶部项目抽屉提供多项目新建与切换，并按项目隔离对话、产物、版本和预览；
+- 使用按用户隔离的 LocalStorage 项目索引与按项目快照作为本地缓存和断网恢复层；
 - 使用 Vitest 测试契约、状态和安全逻辑，使用 Playwright 测试核心浏览器流程。
 
 这是经过主动约束的原型架构。它展示真实编排、失败恢复、安全边界和完整浏览器体验，但不假装支持任意代码仓库或生产级云应用。
@@ -101,7 +102,7 @@ flowchart LR
 | Deterministic Validator | 解析输出、执行安全策略、插入监测代码并验证运行 | 运行任意后端代码                   |
 | Supabase Auth           | 注册、登录、会话刷新与用户 JWT                 | 决定业务数据权限                   |
 | Postgres + RLS          | 保存用户项目、产物、版本和首版 HTML            | 保存无限大小 Artifact              |
-| Browser Storage         | 按用户保存本地投影并支持断网恢复               | 作为多设备并发的唯一事实来源       |
+| Browser Storage         | 按用户索引多个项目，保存独立投影并支持断网恢复 | 作为多设备并发的唯一事实来源       |
 | Preview Sandbox         | 运行已接受的 HTML 并报告运行状态               | 访问父页面、凭证、Cookie 或网络    |
 
 Next.js Route Handler 基于标准 Web `Request` 和 `Response` API，适合实现可迁移的流式接口。但它仍是公开 HTTP Endpoint，必须视为不可信边界。参见 [Next.js Backend for Frontend 指南](https://nextjs.org/docs/app/guides/backend-for-frontend)。
@@ -158,6 +159,17 @@ MVP 不实现通用依赖图。固定依赖链更容易测试，也足以证明�
 ### 4.6 虚拟多文件源码视图
 
 运行与持久化仍只接受通过验证的版本。Code 面板只读取活动成功版本对应的原始 `generatedApp.html`，不会在新候选产物验证期间提前展示它。浏览器纯函数 `splitSelfContainedHtml` 按文档顺序提取所有内联 `<style>` 与 `<script>`：HTML 中替换为虚拟的 `./styles.css` 和 `./app.js` 引用，同类型多块以来源注释拼接。这个投影只用于阅读，不参与执行、下载或保存；预览使用的 `acceptedHtml` 是同一原始产物经安全策略与 Runtime Bridge 注入后的版本。
+
+### 4.7 多项目新建与切换
+
+1. 工作台顶部只显示当前项目名称和项目数量，项目列表按 `savedAt` 倒序放在抽屉中，保持核心对话/预览两栏不变；
+2. 新建项目立即生成新的 UUID 和空快照；产品名生成前显示“未命名项目”，生成后由最新 Product Brief 更新标题；
+3. LocalStorage 先从用户项目索引定位活动项目，再按 `ownerScope + projectId` 读取独立快照；旧 v1/v2 单项目数据仍可读，并在下次保存时写入新索引；
+4. 登录时合并本地与云端摘要列表；打开某项目时才按项目 ID 拉取完整云端快照，并以 `savedAt` 选择本地或云端较新者；
+5. 保存任何项目都会把它设为该浏览器当前活动项目，因此刷新恢复最后打开的项目，而不是重新按全局时间选择项目；
+6. Pipeline 运行、Preview Ready 握手或云端写入期间禁用新建和切换，避免闭包中的异步事件更新错误项目。
+
+项目抽屉首版最多列出最近 50 个项目，不实现删除、搜索和文件夹。完整项目只在打开时加载，避免随着项目数量增长一次下载全部 HTML 与 Agent 产物。
 
 ## 5. 状态模型
 
@@ -436,20 +448,20 @@ Preview Ready Timeout 与模型生成超时分开计算。不能只用 iframe `l
 
 ### 11.1 数据模型
 
-- `projects`：当前项目快照，包含 `user_id`、Prompt、Run/Stage 状态、Product/Technical/Generated 产物、活动版本、错误与修订；
+- `projects`：当前项目快照，包含 `user_id`、最长 100 字符的 `title`、Prompt、Run/Stage 状态、Product/Technical/Generated 产物、活动版本、错误与修订；
 - `project_versions`：最近三个成功版本，包含结构化产物、确定性检查、`accepted_html` 和该版本的 `revision_instruction`；
 - HTML 首版按文本存入 Postgres，数据库和 Zod 都限制为 150 KB；超过这个门槛迁移到 Supabase Storage，并只在版本行保存对象引用和摘要；
-- 当前 UI 只恢复用户最近保存的项目，Schema 支持后续增加项目列表。
+- 当前 UI 列出最近 50 个项目；切换时按项目 ID 延迟加载完整快照和版本。
 
 两张表都引用 `auth.users` 并启用 RLS。匿名角色没有表权限；`authenticated` 角色获得明确 CRUD Grants 后，还必须通过每类操作的 Owner Policy。版本写入额外检查父项目属于同一 `auth.uid()`。仓库和部署环境不使用 `service_role` Key。
 
 ### 11.2 本地缓存与同步
 
-- LocalStorage 使用 `schemaVersion: 2`，Key 按 `guest` 或 Supabase User ID 分区；
+- LocalStorage 快照继续使用 `schemaVersion: 2`；新索引 Key 按 `guest` 或 Supabase User ID 分区，快照 Key 再加入 Project ID；
 - 快照包含校验信息、时间、产物修订、活动版本和最近成功预览；
 - 每次读取都先通过 Zod Schema 校验，损坏或未知版本进入安全降级；
 - 容量不足时压缩为当前成功版本，仍失败则明确提示而不假装已保存；
-- 登录时只比较当前用户本地快照与云端快照，`savedAt` 较新的版本胜出；
+- 登录时合并本地与云端项目摘要；打开具体项目时比较该项目的本地与云端快照，`savedAt` 较新的版本胜出；
 - 两者都为空时才迁入游客快照，并重新生成项目和版本 ID，避免跨用户主键冲突；
 - 退出后立即切回游客分区；云端失败不阻断本地写入，用户手动重试或浏览器恢复联网时重新拉取并合并。
 
@@ -495,6 +507,7 @@ Run、Event、用量和审计记录仍需迁移到持久任务系统。浏览器
 ```text
 BuilderPage
 ├── ProjectHeader
+│   └── ProjectSwitcher → ProjectDrawer
 ├── ConversationWorkbench
 │   ├── ConversationHistory
 │   │   ├── UserMessage
@@ -535,6 +548,7 @@ BuilderPage
 - 自包含 HTML 到三个虚拟文件的确定性拆分与多块合并；
 - HTML Policy、CSP 注入和 Preview Bridge；
 - 存储迁移、损坏、容量限制和淘汰；
+- 多项目索引、旧版单项目迁移和按 ID 恢复；
 - 限流与幂等边界。
 
 ### 14.2 集成测试
@@ -555,6 +569,7 @@ BuilderPage
 - 首次输入与后续修改共用一个 Composer，成功版本在对话流中按顺序出现；
 - 运行错误显示在 Logs 并阻止 Ready；
 - 刷新后恢复最近成功状态；
+- 新建项目 A/B → 切换回 A → 刷新后仍恢复 A；
 - 键盘访问和状态 Live Region；
 - 预置流程明确标记且不调用模型。
 
@@ -577,6 +592,7 @@ D3 已选定 `deepseek-v4-flash`。本机 Key 配置完成后，先用两个固�
 | M9 账号与云同步        | Supabase Auth、Postgres、RLS、Local Cache   | Auth 单测 + Policy 检查 + 集成 E2E |
 | M10 自然语言迭代       | Revision Composer、Orchestrator、Version    | 契约单测 + Revision E2E            |
 | M11 虚拟多文件预览     | Source Projector、Virtual File Tree         | 拆分单测 + Code Panel E2E          |
+| M12 多项目新建与切换   | Project Index、Drawer、Cloud Lazy Load      | 存储单测 + Multi-project E2E       |
 
 ## 16. 最高风险与验证顺序
 
@@ -620,7 +636,7 @@ D3 已选定 `deepseek-v4-flash`。本机 Key 配置完成后，先用两个固�
 
 ### 本地优先，而不是只依赖数据库
 
-Supabase 提供跨设备事实来源与 RLS 隔离；LocalStorage 仍承担即时写入、刷新恢复和断网降级。它不是第二套共享数据库，只有当前用户的最近项目投影，并通过显式冲突规则与云端合并。详见 ADR-0002。
+Supabase 提供跨设备事实来源与 RLS 隔离；LocalStorage 仍承担即时写入、刷新恢复和断网降级。它不是第二套共享数据库，而是当前用户最近项目的本地投影，并通过按项目的显式冲突规则与云端合并。详见 ADR-0002。
 
 ### NDJSON，而不是 WebSocket
 
