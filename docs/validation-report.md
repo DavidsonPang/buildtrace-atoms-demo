@@ -104,7 +104,7 @@ D3 确认预算上限为 ¥10。本地实现包括：
 - 生产地址：<https://buildtrace-atoms-demo-xi.vercel.app>。
 - Function：Fluid Compute；平台时长上限 300 秒，Route 声明 `maxDuration = 180`。
 - Secret：`DEEPSEEK_API_KEY` 仅由候选人在 Vercel Dashboard 配置为 Production Secret；验证只读取变量名称和类型，没有回读值。
-- Supabase：Project URL 和 Publishable Key 配置为 Production Config；未配置 `service_role` Key。部署 `dpl_8ExouFWg56jjQErYYiQ5B4zHiZUQ` 构建成功并重新绑定稳定域名。
+- Supabase：Project URL 和 Publishable Key 配置为 Production Config；未配置 `service_role` Key。对话式布局部署 `dpl_4NwgZfeYoY6Z9b6SG5cUxLCsau63` 构建成功并重新绑定稳定域名。
 - 上传边界：`.env*`、`.internal/`、内部执行计划、根目录文本材料、依赖、构建和测试产物均被 `.vercelignore` 排除。
 
 ### 6.2 在线真实生成
@@ -138,6 +138,13 @@ exceeded action = rate_limit (HTTP 429)
 
 为避免额外模型费用，使用无法通过请求 Schema 的空 JSON 连续测试。四次响应依次为 `400、400、400、429`：前三次到达应用校验层，第四次由边缘限流拦截。规则状态为 Enabled，且已发布至生产配置。
 
+### 6.4 对话式工作台
+
+- 根据生产审阅反馈，将三栏工程控制台改为两栏：左侧上方为需求与版本回复记录、底部为统一输入框，右侧保留大面积 Preview 与检查标签；
+- 首次需求和后续修改共用同一个 Composer；Agent 阶段状态进入当前回复，版本恢复入口进入对应成功回复；
+- 本地 1440 × 900 视觉截图已检查；5 条 Chromium E2E 全部通过；
+- 最新生产首页返回 HTTP 200，服务端 HTML 包含“对话记录”“创建产品”和 Preview 空状态，证明稳定域名已切换到新布局。
+
 ## 7. Supabase 升级验证状态
 
 ### 7.1 已自动验证
@@ -156,13 +163,14 @@ exceeded action = rate_limit (HTTP 429)
 - 本地 Fake Provider 的登录请求通过服务端 `auth.getUser` 并返回 HTTP 200，不产生模型费用；
 - 同一账户在 Vercel 生产 Origin 登录后，从 Postgres 恢复本地 Origin 创建的项目和版本，并显示“已同步”；
 - Vercel 构建完成并重新绑定 <https://buildtrace-atoms-demo-xi.vercel.app>。
+- C4 增量 Migration 已执行；新版生产 `/api/runs` 在不带凭证时返回 401，未触发模型调用；
 - 最终源码、Git 历史和未追踪文件名扫描没有发现 Secret 形态；对 251 个生产构建文件执行已配置 DeepSeek Secret 的精确值扫描，结果为 0；Vercel 变量清单不存在 `service_role`。Publishable Key 按设计进入浏览器包并由 RLS 约束。
 
 ### 7.3 仍待验证
 
 - 使用第二个独立账号直接尝试读取、修改和删除账号 A 的项目，验证 Owner RLS 的动态越权结果；当前只有 Migration Policy 检查与匿名拒绝证据；
 - 真实断网编辑后恢复联网，验证自动重新拉取与同步；当前由代码路径和单元边界覆盖；
-- Vercel `/api/runs` 的未登录 401 与登录后完整 DeepSeek Pipeline；直连测试受本机网络超时影响，为避免额外模型费用未重复真实生成；
+- 新对话式布局下，登录后执行一次自然语言修改并验证云端版本写入；当前自动化覆盖 Fake Provider 全流程，生产登录态仍等待候选人视觉复核；
 
 ### 7.4 自然语言迭代增量状态
 
@@ -170,7 +178,7 @@ exceeded action = rate_limit (HTTP 429)
 - Fake Provider 集成测试证明引导模式下修改不会再次暂停，并按 Product → Architecture → Engineering → Validation 完整执行；
 - 浏览器测试证明 v2 只有在 Preview Ready 后出现，v1 仍保留在版本列表，修改内容在新预览中可见；
 - 纯函数测试证明多个 Style/Script 块会按顺序投影到三个虚拟文件，运行使用的 `acceptedHtml` 不被修改；
-- `202609070002_iteration_metadata.sql` 已通过静态契约测试，但尚未应用到生产 Supabase；新版应用尚未部署，线上仍保持已验证的 v1.1 行为。
+- `202609070002_iteration_metadata.sql` 已应用到生产 Supabase；自然语言迭代和虚拟文件代码已随部署 `dpl_4NwgZfeYoY6Z9b6SG5cUxLCsau63` 上线；生产登录态修改仍等待候选人完成一次最终视觉/交互复核。
 
 ## 8. 已知限制与下一步
 
@@ -183,9 +191,8 @@ exceeded action = rate_limit (HTTP 429)
 - 已完成项目可在刷新后恢复；未完成运行的流式连接和一键续跑元数据不会跨刷新恢复。
 - 引导模式只允许编辑 Product Brief；Technical Plan 目前只读。
 - 自然语言修改基于 Product Brief 进行语义重建，不保证未提及的代码或像素细节逐字不变；虚拟多文件视图只读，不是真实构建目录。
-- 生产 Supabase 在部署新版前必须先执行 `202609070002_iteration_metadata.sql`，否则云端版本查询会因缺少字段失败。
 - 线上只执行了一次完整真实生成，不能据此推断长期可用性或所有提示词表现。
 - 没有把 Provider 用量暴露给客户端；费用应以 DeepSeek 控制台账单为最终依据。
 - 内存次数与费用计数不是分布式配额；当前 WAF 限制单 IP 频率，但不能替代用户级配额。
 
-核心 Agent Pipeline、差异化重建、本地恢复和 Supabase 单账号生产链路已完成；自然语言迭代与虚拟源码视图已完成本地实现和自动验证。生产增量迁移、部署、双账号隔离与断网重连不会被当前证据夸大为已验证。
+核心 Agent Pipeline、差异化重建、本地恢复和 Supabase 单账号生产链路已完成；自然语言迭代、虚拟源码视图与对话式工作台已完成本地自动验证和生产部署。最终登录态修改、双账号隔离与断网重连不会被当前证据夸大为已验证。
