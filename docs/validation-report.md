@@ -168,6 +168,7 @@ exceeded action = rate_limit (HTTP 429)
 - C4 增量 Migration 已执行；新版生产 `/api/runs` 在不带凭证时返回 401，未触发模型调用；
 - 最终源码、Git 历史和未追踪文件名扫描没有发现 Secret 形态；对 251 个生产构建文件执行已配置 DeepSeek Secret 的精确值扫描，结果为 0；Vercel 变量清单不存在 `service_role`。Publishable Key 按设计进入浏览器包并由 RLS 约束。
 - C7 标题 Migration 已由候选人在 Supabase 执行；部署 `dpl_eGLY9ycCcLgJNDGW41bJTHmZwyu1` 已 Ready 并重新绑定稳定域名。首页与 Preset API 返回 200，合法但未带登录凭证的生成请求返回 401，未触发模型调用。
+- C9 已将 C8 三个提交推送至 GitHub `main`；生产部署 `dpl_FkXumJ6wnCKMSsnfaevBkYtBG2yy` 已 Ready 并重新绑定稳定域名。首页与 Preset API 返回 200，合法未登录生成请求返回 401，未触发模型调用。
 - 生产匿名浏览器回放完成“加载 SwiftQuote → 新建空项目 → 切回 SwiftQuote → 刷新恢复”，顶部正确显示 2 个项目，对话与预览保持一致。
 
 ### 7.3 仍待验证
@@ -193,14 +194,14 @@ exceeded action = rate_limit (HTTP 429)
 - 生成和云同步期间的切换入口会禁用，避免异步结果跨项目写入；
 - `202609080003_multi_project_titles.sql` 已执行，多项目版本已随部署 `dpl_eGLY9ycCcLgJNDGW41bJTHmZwyu1` 上线；匿名生产回放通过，登录态跨 Origin 多项目验证尚未执行。
 
-### 7.6 C8 产物信息架构重构（本地）
+### 7.6 C8 产物信息架构重构与 C9 发布
 
 - 删除对话底部常驻的 Product Brief、Technical Plan 和 Generated App 大卡片；每条成功版本回复改为附带三个紧凑产物入口；
 - 新增右侧 Artifacts 面板：Product Brief 可查看和结构化编辑，Technical Plan 只读，Validation 入口直接切换验证面板；
 - 点击历史版本的任一产物入口时先恢复对应版本，再展示其产物或验证，避免版本上下文错位；
 - 引导模式生成 Product Brief 后自动打开产物面板，确认构建与下游重建操作随 Brief 放置；
-- Lint、TypeScript、38 个 Vitest 单元测试和 6 条 Chromium E2E 全部通过；本地浏览器视觉检查确认对话区不再出现常驻产物卡片，产物文档在右侧可读；
-- 本增量尚未推送或部署。C9 明确确认前，生产仍保持 C7 版本。
+- Lint、TypeScript、40 个 Vitest 单元测试、7 条 Chromium E2E 和生产构建全部通过；本地浏览器视觉检查确认对话区不再出现常驻产物卡片，产物文档在右侧可读；
+- C9 已确认并完成 GitHub 推送及 Vercel Production 部署，稳定域名已指向 `dpl_FkXumJ6wnCKMSsnfaevBkYtBG2yy`；HTTP 冒烟通过。Chrome 扩展连续超时，因此本轮不把生产 UI 自动回放记为通过，仍需候选人在稳定域名人工点验产物入口与 Brief 编辑。
 
 ### 7.7 本地 UI 恢复故障与修复
 
