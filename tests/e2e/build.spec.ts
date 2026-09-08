@@ -139,3 +139,50 @@ test("用自然语言生成新版本，并在虚拟文件树中切换源码", as
     "document",
   );
 });
+
+test("创建多个项目后可切换，并在刷新后恢复当前项目", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator('main[data-hydrated="true"]')).toBeVisible();
+  await page
+    .getByRole("button", { name: "查看预置成功项目 · 零模型调用" })
+    .click();
+  await expect(page.getByText("预览已就绪", { exact: true })).toBeVisible();
+
+  await page.locator(".project-switcher").click();
+  await page.getByRole("button", { name: /创建新项目/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "等待第一个可运行版本" }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "活动容量看板" }).click();
+  await page.getByRole("button", { name: /开始生成/ }).click();
+  await expect(
+    page.frameLocator('iframe[title="生成产品预览"]').getByRole("heading", {
+      name: /SeatFlow/,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("预览已就绪", { exact: true })).toBeVisible();
+
+  await page.locator(".project-switcher").click();
+  await expect(
+    page.locator(".project-list").getByText("SwiftQuote", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".project-list").getByText("SeatFlow", { exact: true }),
+  ).toBeVisible();
+  await page.locator(".project-list button", { hasText: "SwiftQuote" }).click();
+  await expect(
+    page.frameLocator('iframe[title="生成产品预览"]').getByRole("heading", {
+      name: /清楚报价/,
+    }),
+  ).toBeVisible();
+
+  await page.reload();
+  await expect(page.locator('main[data-hydrated="true"]')).toBeVisible();
+  await expect(page.locator(".project-switcher")).toContainText("SwiftQuote");
+  await expect(
+    page.frameLocator('iframe[title="生成产品预览"]').getByRole("heading", {
+      name: /清楚报价/,
+    }),
+  ).toBeVisible();
+});

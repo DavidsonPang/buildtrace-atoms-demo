@@ -17,6 +17,13 @@ const iterationMigration = readFileSync(
   ),
   "utf8",
 ).toLowerCase();
+const multiProjectMigration = readFileSync(
+  resolve(
+    process.cwd(),
+    "supabase/migrations/202609080003_multi_project_titles.sql",
+  ),
+  "utf8",
+).toLowerCase();
 
 describe("Supabase migration security contract", () => {
   it.each(["projects", "project_versions"])(
@@ -55,6 +62,18 @@ describe("Supabase migration security contract", () => {
     );
     expect(iterationMigration).toContain(
       "check (char_length(revision_instruction) <= 800)",
+    );
+  });
+
+  it("为项目列表增加受限标题并回填已有 Product Brief 名称", () => {
+    expect(multiProjectMigration).toContain(
+      "add column title text not null default '未命名项目'",
+    );
+    expect(multiProjectMigration).toContain(
+      "check (char_length(title) between 1 and 100)",
+    );
+    expect(multiProjectMigration).toContain(
+      "product -> 'productbrief' ->> 'productname'",
     );
   });
 });

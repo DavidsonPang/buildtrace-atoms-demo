@@ -2,9 +2,12 @@ import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
+  ProjectSummarySchema,
   ProjectSnapshotSchema,
   ProjectVersionSchema,
+  projectTitle,
   type ProjectSnapshot,
+  type ProjectSummary,
 } from "@/src/lib/project-store";
 
 const CloudProjectRowSchema = z.object({
@@ -37,6 +40,14 @@ const CloudVersionRowSchema = z.object({
   created_at: z.string(),
 });
 
+const CloudProjectSummaryRowSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string().min(1).max(100),
+  saved_at: z.string(),
+  run_state: z.string(),
+  active_version_id: z.string().uuid().nullable(),
+});
+
 export class CloudProjectError extends Error {
   constructor(message: string) {
     super(message);
@@ -52,6 +63,7 @@ export async function saveCloudProject(
   const project = {
     id: snapshot.projectId,
     user_id: userId,
+    title: projectTitle(snapshot),
     prompt: snapshot.prompt,
     mode: snapshot.mode,
     run_state: snapshot.runState,
@@ -135,6 +147,92 @@ export async function loadLatestCloudProject(
   }
   if (!projectData) return null;
 
+  return hydrateCloudProject(client, userId, projectData);
+}
+
+export async function loadCloudProject(
+  client: SupabaseClient,
+  userId: string,
+  projectId: string,
+): Promise<ProjectSnapshot | null> {
+  const { data: projectData, error: projectError } = await client
+    .from("projects")
+    .select(
+      "id,prompt,mode,run_state,stages,provider_label,product,technical_plan,generated_app,active_version_id,last_error,brief_revision,saved_at",
+    )
+    .eq("user_id", userId)
+    .eq("id", projectId)
+    .maybeSingle();
+
+  if (projectError) {
+    throw new CloudProjectError(`云端项目读取失败：${projectError.message}`);
+  }
+  if (!projectData) return null;
+
+  return hydrateCloudProject(client, userId, projectData);
+}
+
+export async function listCloudProjects(
+  client: SupabaseClient,
+  userId: string,
+): Promise<ProjectSummary[]> {
+  const { data: projectData, error: projectError } = await client
+    .from("projects")
+    .select("id,title,saved_at,run_state,active_version_id")
+    .eq("user_id", userId)
+    .order("saved_at", { ascending: false })
+    .limit(50);
+
+  if (projectError) {
+    throw new CloudProjectError(
+      `云端项目列表读取失败：${projectError.message}`,
+    );
+  }
+
+  const projects = (projectData ?? []).map((row) =>
+    CloudProjectSummaryRowSchema.parse(row),
+  );
+  if (!projects.length) return [];
+
+  const ids = projects.map((project) => project.id);
+  const { data: versionData, error: versionError } = await client
+    .from("project_versions")
+    .select("project_id")
+    .eq("user_id", userId)
+    .in("project_id", ids);
+
+  if (versionError) {
+    throw new CloudProjectError(
+      `云端项目版本统计失败：${versionError.message}`,
+    );
+  }
+
+  const versionCounts = new Map<string, number>();
+  for (const row of versionData ?? []) {
+    if (typeof row.project_id !== "string") continue;
+    versionCounts.set(
+      row.project_id,
+      (versionCounts.get(row.project_id) ?? 0) + 1,
+    );
+  }
+
+  return projects.map((project) =>
+    ProjectSummarySchema.parse({
+      projectId: project.id,
+      title: project.title,
+      savedAt: project.saved_at,
+      runState: project.run_state,
+      activeVersionId: project.active_version_id,
+      versionCount: versionCounts.get(project.id) ?? 0,
+    }),
+  );
+}
+
+async function hydrateCloudProject(
+  client: SupabaseClient,
+  userId: string,
+  projectData: unknown,
+): Promise<ProjectSnapshot> {
   const project = CloudProjectRowSchema.parse(projectData);
   const { data: versionData, error: versionError } = await client
     .from("project_versions")

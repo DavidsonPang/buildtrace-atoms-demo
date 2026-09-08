@@ -11,6 +11,7 @@ import {
   PROJECT_STORAGE_KEY,
   ProjectSnapshotSchema,
   forkProjectSnapshot,
+  listLocalProjects,
   loadProject,
   saveProject,
   selectAccountSnapshot,
@@ -139,6 +140,53 @@ describe("project store", () => {
 
     expect(loadProject(storage, "user-a").snapshot).not.toBeNull();
     expect(loadProject(storage, "user-b").snapshot).toBeNull();
+  });
+
+  it("同一用户可保存、列出并分别恢复多个项目", () => {
+    const storage = new MemoryStorage();
+    const first = snapshot();
+    const second = {
+      ...snapshot(),
+      projectId: "84c082c1-b442-4d03-833f-aa23fe89d23c",
+      product: {
+        ...snapshot().product,
+        productBrief: {
+          ...snapshot().product?.productBrief,
+          productName: "活动容量看板",
+        },
+      },
+    } as ProjectSnapshot;
+
+    saveProject(storage, first, "user-a");
+    saveProject(storage, second, "user-a");
+
+    const index = listLocalProjects(storage, "user-a");
+    expect(index.projects).toHaveLength(2);
+    expect(index.activeProjectId).toBe(second.projectId);
+    expect(index.projects.map((project) => project.title)).toContain(
+      "活动容量看板",
+    );
+    expect(
+      loadProject(storage, "user-a", first.projectId).snapshot?.projectId,
+    ).toBe(first.projectId);
+    expect(
+      loadProject(storage, "user-a", second.projectId).snapshot?.projectId,
+    ).toBe(second.projectId);
+  });
+
+  it("v2 单项目快照会在下一次保存时进入项目索引", () => {
+    const storage = new MemoryStorage();
+    const current = snapshot();
+    storage.setItem(PROJECT_STORAGE_KEY, JSON.stringify(current));
+
+    const restored = loadProject(storage).snapshot;
+    expect(restored?.projectId).toBe(current.projectId);
+    saveProject(storage, restored!);
+
+    expect(listLocalProjects(storage).projects).toHaveLength(1);
+    expect(
+      loadProject(storage, "guest", current.projectId).snapshot?.projectId,
+    ).toBe(current.projectId);
   });
 
   it("把游客项目迁入账户时重建项目与版本 ID", () => {

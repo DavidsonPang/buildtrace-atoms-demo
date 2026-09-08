@@ -16,6 +16,8 @@ import {
   type ValidationCheck,
 } from "@/src/lib/contracts";
 import {
+  listCloudProjects,
+  loadCloudProject,
   loadLatestCloudProject,
   saveCloudProject,
 } from "@/src/lib/cloud-project-store";
@@ -24,10 +26,12 @@ import {
   MAX_STORED_VERSIONS,
   clearProject,
   createProjectVersion,
+  listLocalProjects,
   loadProject,
   saveProject,
   selectAccountSnapshot,
   type ProjectSnapshot,
+  type ProjectSummary,
   type ProjectVersion,
 } from "@/src/lib/project-store";
 import {
@@ -132,6 +136,11 @@ export function BuilderWorkspace() {
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
   const [briefRevision, setBriefRevision] = useState(0);
   const [projectId, setProjectId] = useState("");
+  const [projectSummaries, setProjectSummaries] = useState<ProjectSummary[]>(
+    [],
+  );
+  const [projectDrawerOpen, setProjectDrawerOpen] = useState(false);
+  const [projectSwitching, setProjectSwitching] = useState(false);
   const [storageScope, setStorageScope] = useState("guest");
   const [cloudStatus, setCloudStatus] = useState<
     "local" | "syncing" | "synced" | "error"
@@ -223,10 +232,14 @@ export function BuilderWorkspace() {
     sessionIdRef.current = sessionId;
 
     const restored = loadProject(window.localStorage, "guest");
+    const localProjects = listLocalProjects(window.localStorage, "guest");
     queueMicrotask(() => {
       if (cancelled) return;
-      if (restored.error) setStorageError(restored.error);
+      if (restored.error || localProjects.error) {
+        setStorageError(restored.error ?? localProjects.error ?? "");
+      }
       applySnapshot(restored.snapshot ?? createEmptyProjectSnapshot());
+      setProjectSummaries(localProjects.projects);
       setHydrated(true);
     });
 
@@ -252,10 +265,16 @@ export function BuilderWorkspace() {
       setCloudError("");
       void (async () => {
         const local = loadProject(window.localStorage, userId);
+        const localProjects = listLocalProjects(window.localStorage, userId);
         const guestCandidate = currentSnapshotRef.current;
-        setStorageError(local.error ?? "");
+        setStorageError(local.error ?? localProjects.error ?? "");
         try {
-          const cloud = await loadLatestCloudProject(client, userId);
+          const [cloud, cloudProjects] = await Promise.all([
+            local.snapshot
+              ? loadCloudProject(client, userId, local.snapshot.projectId)
+              : loadLatestCloudProject(client, userId),
+            listCloudProjects(client, userId),
+          ]);
           if (cancelled) return;
 
           const snapshot =
@@ -269,6 +288,16 @@ export function BuilderWorkspace() {
           activeAuthScopeRef.current = userId;
           applySnapshot(snapshot);
           const cached = saveProject(window.localStorage, snapshot, userId);
+          const refreshedLocalProjects = listLocalProjects(
+            window.localStorage,
+            userId,
+          );
+          setProjectSummaries(
+            mergeProjectSummaries(
+              refreshedLocalProjects.projects,
+              cloudProjects,
+            ),
+          );
           setStorageError(
             !cached.ok
               ? "本地空间不足，云端项目已加载但无法建立离线缓存。"
@@ -292,6 +321,7 @@ export function BuilderWorkspace() {
             setStorageScope(userId);
             activeAuthScopeRef.current = userId;
             applySnapshot(local.snapshot);
+            setProjectSummaries(localProjects.projects);
           } else {
             setStorageScope("guest");
             activeAuthScopeRef.current = "guest";
@@ -312,7 +342,9 @@ export function BuilderWorkspace() {
       setCloudError("");
       const guest = loadProject(window.localStorage, "guest");
       applySnapshot(guest.snapshot ?? createEmptyProjectSnapshot());
-      setStorageError(guest.error ?? "");
+      const guestProjects = listLocalProjects(window.localStorage, "guest");
+      setProjectSummaries(guestProjects.projects);
+      setStorageError(guest.error ?? guestProjects.error ?? "");
     }
 
     return () => {
@@ -332,6 +364,15 @@ export function BuilderWorkspace() {
     window.addEventListener("online", retryWhenOnline);
     return () => window.removeEventListener("online", retryWhenOnline);
   }, []);
+
+  useEffect(() => {
+    if (!projectDrawerOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setProjectDrawerOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [projectDrawerOpen]);
 
   useEffect(() => {
     if (!hydrated || !projectId || storageError) return;
@@ -354,6 +395,15 @@ export function BuilderWorkspace() {
     };
     currentSnapshotRef.current = snapshot;
     const result = saveProject(window.localStorage, snapshot, storageScope);
+    const refreshedProjects = listLocalProjects(
+      window.localStorage,
+      storageScope,
+    );
+    queueMicrotask(() =>
+      setProjectSummaries((current) =>
+        mergeProjectSummaries(refreshedProjects.projects, current),
+      ),
+    );
     if (!result.ok) {
       queueMicrotask(() =>
         setStorageError("本地空间不足，当前进度无法继续保存。"),
@@ -791,6 +841,101 @@ export function BuilderWorkspace() {
   const composerReady = hasSuccessfulVersion
     ? revisionInstruction.trim().length >= 3
     : prompt.trim().length >= 10;
+  const projectChangeDisabled =
+    isRunning ||
+    projectSwitching ||
+    (auth.status === "signed_in" && cloudStatus === "syncing");
+  const currentProjectTitle =
+    product?.productBrief.productName.trim() ||
+    projectSummaries.find((project) => project.projectId === projectId)
+      ?.title ||
+    "未命名项目";
+
+  const createNewProject = () => {
+    if (projectChangeDisabled) return;
+    const snapshot = createEmptyProjectSnapshot();
+    const cached = saveProject(window.localStorage, snapshot, storageScope);
+    if (!cached.ok) {
+      setStorageError("本地空间不足，无法创建新项目。");
+      return;
+    }
+    applySnapshot(snapshot);
+    setProjectSummaries(
+      listLocalProjects(window.localStorage, storageScope).projects,
+    );
+    setProjectDrawerOpen(false);
+    setCloudError("");
+  };
+
+  const openProject = async (targetProjectId: string) => {
+    if (projectChangeDisabled || targetProjectId === projectId) {
+      setProjectDrawerOpen(false);
+      return;
+    }
+
+    setProjectSwitching(true);
+    setCloudError("");
+    const local = loadProject(
+      window.localStorage,
+      storageScope,
+      targetProjectId,
+    );
+    setStorageError(local.error ?? "");
+
+    try {
+      let cloud: ProjectSnapshot | null = null;
+      if (auth.status === "signed_in" && auth.user && auth.client) {
+        setCloudStatus("syncing");
+        try {
+          cloud = await loadCloudProject(
+            auth.client,
+            auth.user.id,
+            targetProjectId,
+          );
+          cloudReadyUserRef.current = auth.user.id;
+        } catch (reason) {
+          if (!local.snapshot) throw reason;
+          cloudReadyUserRef.current = null;
+          setCloudStatus("error");
+          setCloudError(
+            reason instanceof Error
+              ? `${reason.message}；已打开本地缓存。`
+              : "云端项目读取失败；已打开本地缓存。",
+          );
+        }
+      }
+
+      const snapshot = selectAccountSnapshot({
+        local: local.snapshot,
+        cloud,
+        guest: null,
+      });
+      if (!snapshot) throw new Error("这个项目暂时无法读取，请刷新后重试。");
+
+      applySnapshot(snapshot);
+      const cached = saveProject(window.localStorage, snapshot, storageScope);
+      if (!cached.ok) {
+        setStorageError("项目已打开，但本地空间不足，无法更新离线缓存。");
+      }
+      setProjectSummaries((current) =>
+        mergeProjectSummaries(
+          listLocalProjects(window.localStorage, storageScope).projects,
+          current,
+        ),
+      );
+      setProjectDrawerOpen(false);
+      if (auth.status === "signed_in" && cloudReadyUserRef.current) {
+        setCloudStatus("synced");
+      }
+    } catch (reason) {
+      setCloudStatus(auth.status === "signed_in" ? "error" : "local");
+      setCloudError(
+        reason instanceof Error ? reason.message : "项目读取失败，请稍后重试。",
+      );
+    } finally {
+      setProjectSwitching(false);
+    }
+  };
 
   const saveBriefRevision = (nextProduct: ProductAgentOutput) => {
     productRef.current = nextProduct;
@@ -937,9 +1082,23 @@ export function BuilderWorkspace() {
   return (
     <main className="app-shell" data-hydrated={hydrated}>
       <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true" />
-          BuildTrace
+        <div className="brand-group">
+          <div className="brand">
+            <span className="brand-mark" aria-hidden="true" />
+            BuildTrace
+          </div>
+          <button
+            aria-expanded={projectDrawerOpen}
+            aria-haspopup="dialog"
+            className="project-switcher"
+            disabled={!hydrated || projectSwitching}
+            onClick={() => setProjectDrawerOpen(true)}
+            type="button"
+          >
+            <span>{currentProjectTitle}</span>
+            <small>{projectSummaries.length || 1} 个项目</small>
+            <b aria-hidden="true">⌄</b>
+          </button>
         </div>
         <div className="topbar-meta">
           <span>idea → product</span>
@@ -952,6 +1111,81 @@ export function BuilderWorkspace() {
           <AuthControls />
         </div>
       </header>
+
+      {projectDrawerOpen ? (
+        <>
+          <button
+            aria-label="关闭项目列表"
+            className="project-drawer-backdrop"
+            onClick={() => setProjectDrawerOpen(false)}
+            type="button"
+          />
+          <aside
+            aria-label="项目列表"
+            aria-modal="true"
+            className="project-drawer"
+            role="dialog"
+          >
+            <header>
+              <div>
+                <p>PROJECTS</p>
+                <h2>我的项目</h2>
+              </div>
+              <button
+                aria-label="关闭"
+                onClick={() => setProjectDrawerOpen(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </header>
+            <button
+              className="new-project-button"
+              disabled={projectChangeDisabled}
+              onClick={createNewProject}
+              type="button"
+            >
+              <span>＋</span>
+              <div>
+                <strong>创建新项目</strong>
+                <small>开启一段独立的构建对话</small>
+              </div>
+            </button>
+            <div className="project-list">
+              {projectSummaries.map((project) => (
+                <button
+                  className={project.projectId === projectId ? "active" : ""}
+                  disabled={projectChangeDisabled}
+                  key={project.projectId}
+                  onClick={() => void openProject(project.projectId)}
+                  type="button"
+                >
+                  <span className="project-list-mark" aria-hidden="true">
+                    {project.projectId === projectId ? "●" : "○"}
+                  </span>
+                  <span className="project-list-copy">
+                    <strong>{project.title}</strong>
+                    <small>
+                      {projectStatusLabel(project.runState)} ·{" "}
+                      {project.versionCount} 个版本
+                    </small>
+                  </span>
+                  <time dateTime={project.savedAt}>
+                    {formatProjectTime(project.savedAt)}
+                  </time>
+                </button>
+              ))}
+            </div>
+            {projectChangeDisabled ? (
+              <p className="project-drawer-note">
+                {isRunning
+                  ? "生成期间暂不能切换项目，避免运行结果写入错误项目。"
+                  : "云端同步完成后即可切换项目。"}
+              </p>
+            ) : null}
+          </aside>
+        </>
+      ) : null}
 
       <section className="workspace" aria-label="BuildTrace 产品工作台">
         <section className="workbench">
@@ -1617,4 +1851,52 @@ function cloudStatusLabel(status: "local" | "syncing" | "synced" | "error") {
     synced: "已同步",
     error: "云端待重试",
   }[status];
+}
+
+function mergeProjectSummaries(
+  ...collections: ProjectSummary[][]
+): ProjectSummary[] {
+  const projects = new Map<string, ProjectSummary>();
+  for (const collection of collections) {
+    for (const project of collection) {
+      const current = projects.get(project.projectId);
+      if (
+        !current ||
+        Date.parse(project.savedAt) > Date.parse(current.savedAt)
+      ) {
+        projects.set(project.projectId, project);
+      }
+    }
+  }
+  return [...projects.values()].sort(
+    (left, right) => Date.parse(right.savedAt) - Date.parse(left.savedAt),
+  );
+}
+
+function projectStatusLabel(state: ProjectSummary["runState"]) {
+  if (state === "ready") return "已就绪";
+  if (["running", "previewing", "rebuilding", "retrying"].includes(state)) {
+    return "处理中";
+  }
+  if (state === "awaiting_user") return "待确认";
+  if (state === "failed") return "需检查";
+  if (state === "cancelled") return "已取消";
+  return "尚未构建";
+}
+
+function formatProjectTime(savedAt: string) {
+  const timestamp = Date.parse(savedAt);
+  if (!Number.isFinite(timestamp)) return "时间未知";
+  const elapsed = Date.now() - timestamp;
+  if (elapsed >= 0 && elapsed < 60_000) return "刚刚";
+  if (elapsed >= 0 && elapsed < 3_600_000) {
+    return `${Math.max(1, Math.floor(elapsed / 60_000))} 分钟前`;
+  }
+  if (elapsed >= 0 && elapsed < 86_400_000) {
+    return `${Math.max(1, Math.floor(elapsed / 3_600_000))} 小时前`;
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+  }).format(new Date(timestamp));
 }

@@ -82,6 +82,58 @@ input:focus-visible,
   letter-spacing: -0.02em;
 }
 
+.brand-group {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.project-switcher {
+  min-width: 0;
+  max-width: 330px;
+  display: grid;
+  grid-template-columns: minmax(0, auto) auto 12px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid #3a463e;
+  border-radius: 10px;
+  color: #eef4ef;
+  background: #1b231e;
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-switcher:hover:not(:disabled) {
+  border-color: #68776d;
+  background: #232d26;
+}
+
+.project-switcher:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.project-switcher > span {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-switcher small {
+  color: #89968d;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.project-switcher b {
+  color: var(--acid);
+  font-size: 12px;
+}
+
 .brand-mark {
   position: relative;
   width: 27px;
@@ -219,6 +271,183 @@ input:focus-visible,
 
 .cloud-chip.error::before {
   background: #df8066;
+}
+
+.project-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  border: 0;
+  background: rgba(8, 12, 9, 0.54);
+  cursor: default;
+  backdrop-filter: blur(3px);
+}
+
+.project-drawer {
+  position: fixed;
+  z-index: 81;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: min(390px, calc(100vw - 24px));
+  display: flex;
+  flex-direction: column;
+  padding: 22px;
+  color: var(--ink);
+  background: #f7f8f4;
+  box-shadow: 25px 0 80px rgba(0, 0, 0, 0.34);
+}
+
+.project-drawer > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.project-drawer > header p {
+  margin: 0 0 4px;
+  color: #7d8980;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.16em;
+}
+
+.project-drawer > header h2 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.035em;
+}
+
+.project-drawer > header button {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #d4dbd3;
+  border-radius: 10px;
+  color: #657168;
+  background: white;
+  cursor: pointer;
+  font-size: 19px;
+}
+
+.new-project-button {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #31563d;
+  border-radius: 13px;
+  color: white;
+  background: var(--forest);
+  cursor: pointer;
+  text-align: left;
+}
+
+.new-project-button > span {
+  width: 29px;
+  height: 29px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  color: #203c29;
+  background: var(--acid);
+  font-size: 17px;
+  font-weight: 850;
+}
+
+.new-project-button div,
+.project-list-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.new-project-button strong {
+  font-size: 11px;
+}
+
+.new-project-button small {
+  color: #b8c9bd;
+  font-size: 9px;
+}
+
+.new-project-button:disabled,
+.project-list button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.project-list {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  margin-top: 18px;
+  overflow-y: auto;
+}
+
+.project-list button {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 11px 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: #506057;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-list button:hover:not(:disabled) {
+  border-color: #d8ded7;
+  background: white;
+}
+
+.project-list button.active {
+  border-color: #c9d49e;
+  background: #f0f4da;
+}
+
+.project-list-mark {
+  color: #839087;
+  font-size: 9px;
+}
+
+.project-list button.active .project-list-mark {
+  color: #3f6a49;
+}
+
+.project-list-copy strong {
+  overflow: hidden;
+  color: #29382f;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-list-copy small,
+.project-list time {
+  color: #839087;
+  font-size: 9px;
+}
+
+.project-list time {
+  white-space: nowrap;
+}
+
+.project-drawer-note {
+  margin: auto 0 0;
+  padding: 11px 12px;
+  border-radius: 10px;
+  color: #766735;
+  background: #f4ebc7;
+  font-size: 10px;
+  line-height: 1.5;
 }
 
 .auth-backdrop {
@@ -1517,6 +1746,23 @@ input:focus-visible,
 }
 
 @media (max-width: 560px) {
+  .brand-group {
+    gap: 8px;
+  }
+
+  .brand {
+    font-size: 0;
+  }
+
+  .project-switcher {
+    max-width: 190px;
+    grid-template-columns: minmax(0, 1fr) 10px;
+  }
+
+  .project-switcher small {
+    display: none;
+  }
+
   .topbar-meta > span:not(.demo-chip) {
     display: none;
   }

@@ -14,6 +14,7 @@ import {
 export const LEGACY_PROJECT_STORAGE_KEY = "buildtrace-project-v1";
 export const PROJECT_STORAGE_KEY = "buildtrace-project-v2:guest";
 export const MAX_STORED_VERSIONS = 3;
+export const MAX_INDEXED_PROJECTS = 50;
 
 const StageStateSchema = z.enum([
   "queued",
@@ -88,6 +89,23 @@ const LegacyProjectSnapshotSchema = z.object({
 
 export type ProjectSnapshot = z.infer<typeof ProjectSnapshotSchema>;
 
+export const ProjectSummarySchema = z.object({
+  projectId: z.string().uuid(),
+  title: z.string().min(1).max(100),
+  savedAt: z.string(),
+  runState: RunStateSchema,
+  activeVersionId: z.string().uuid().nullable(),
+  versionCount: z.number().int().nonnegative(),
+});
+
+export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
+
+const ProjectIndexSchema = z.object({
+  schemaVersion: z.literal(1),
+  activeProjectId: z.string().uuid().nullable(),
+  projects: z.array(ProjectSummarySchema).max(MAX_INDEXED_PROJECTS),
+});
+
 type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 export type LoadProjectResult =
@@ -98,9 +116,114 @@ export function projectStorageKey(ownerScope = "guest") {
   return `buildtrace-project-v2:${encodeURIComponent(ownerScope)}`;
 }
 
+export function projectIndexKey(ownerScope = "guest") {
+  return `buildtrace-project-index-v1:${encodeURIComponent(ownerScope)}`;
+}
+
+export function projectSnapshotKey(projectId: string, ownerScope = "guest") {
+  return `buildtrace-project-v3:${encodeURIComponent(ownerScope)}:${projectId}`;
+}
+
+export function projectTitle(snapshot: ProjectSnapshot) {
+  const productName = snapshot.product?.productBrief.productName.trim();
+  return (productName || "未命名项目").slice(0, 100);
+}
+
+export function projectSummary(snapshot: ProjectSnapshot): ProjectSummary {
+  return ProjectSummarySchema.parse({
+    projectId: snapshot.projectId,
+    title: projectTitle(snapshot),
+    savedAt: snapshot.savedAt,
+    runState: snapshot.runState,
+    activeVersionId: snapshot.activeVersionId,
+    versionCount: snapshot.versions.length,
+  });
+}
+
+function readProjectIndex(storage: StorageLike, ownerScope: string) {
+  const raw = storage.getItem(projectIndexKey(ownerScope));
+  if (!raw) return { index: null, error: null } as const;
+  try {
+    const parsed = ProjectIndexSchema.safeParse(JSON.parse(raw) as unknown);
+    if (parsed.success) return { index: parsed.data, error: null } as const;
+    return { index: null, error: "本地项目索引版本无法识别。" } as const;
+  } catch {
+    return { index: null, error: "本地项目索引已损坏。" } as const;
+  }
+}
+
+function parseSnapshot(raw: string): LoadProjectResult {
+  try {
+    const parsed = ProjectSnapshotSchema.safeParse(JSON.parse(raw) as unknown);
+    return parsed.success
+      ? { snapshot: parsed.data, error: null }
+      : {
+          snapshot: null,
+          error:
+            "本地项目版本无法识别，已暂停恢复；你可以重置本地数据后重新开始。",
+        };
+  } catch {
+    return {
+      snapshot: null,
+      error: "本地项目数据已损坏，已暂停恢复；你可以重置本地数据后重新开始。",
+    };
+  }
+}
+
+export function listLocalProjects(
+  storage: StorageLike,
+  ownerScope = "guest",
+): {
+  projects: ProjectSummary[];
+  activeProjectId: string | null;
+  error: string | null;
+} {
+  const { index, error } = readProjectIndex(storage, ownerScope);
+  if (index) {
+    return {
+      projects: [...index.projects].sort(
+        (left, right) => Date.parse(right.savedAt) - Date.parse(left.savedAt),
+      ),
+      activeProjectId: index.activeProjectId,
+      error: null,
+    };
+  }
+
+  const legacy = loadLegacyProject(storage, ownerScope);
+  return {
+    projects: legacy.snapshot ? [projectSummary(legacy.snapshot)] : [],
+    activeProjectId: legacy.snapshot?.projectId ?? null,
+    error: error ?? legacy.error,
+  };
+}
+
 export function loadProject(
   storage: StorageLike,
   ownerScope = "guest",
+  projectId?: string,
+): LoadProjectResult {
+  if (projectId) {
+    const raw = storage.getItem(projectSnapshotKey(projectId, ownerScope));
+    return raw ? parseSnapshot(raw) : { snapshot: null, error: null };
+  }
+
+  const { index, error: indexError } = readProjectIndex(storage, ownerScope);
+  if (index?.activeProjectId) {
+    const raw = storage.getItem(
+      projectSnapshotKey(index.activeProjectId, ownerScope),
+    );
+    if (raw) return parseSnapshot(raw);
+  }
+
+  const legacy = loadLegacyProject(storage, ownerScope);
+  if (legacy.snapshot || legacy.error) return legacy;
+  if (indexError) return { snapshot: null, error: indexError };
+  return { snapshot: null, error: null };
+}
+
+function loadLegacyProject(
+  storage: StorageLike,
+  ownerScope: string,
 ): LoadProjectResult {
   const key = projectStorageKey(ownerScope);
   const raw =
@@ -151,7 +274,7 @@ export function saveProject(
   });
 
   try {
-    storage.setItem(projectStorageKey(ownerScope), JSON.stringify(normalized));
+    writeProjectAndIndex(storage, normalized, ownerScope);
     return { ok: true, compacted: false } as const;
   } catch {
     const active =
@@ -165,7 +288,7 @@ export function saveProject(
     });
 
     try {
-      storage.setItem(projectStorageKey(ownerScope), JSON.stringify(compacted));
+      writeProjectAndIndex(storage, compacted, ownerScope);
       return { ok: true, compacted: true } as const;
     } catch {
       return { ok: false, compacted: true } as const;
@@ -173,7 +296,58 @@ export function saveProject(
   }
 }
 
-export function clearProject(storage: StorageLike, ownerScope = "guest") {
+function writeProjectAndIndex(
+  storage: StorageLike,
+  snapshot: ProjectSnapshot,
+  ownerScope: string,
+) {
+  storage.setItem(
+    projectSnapshotKey(snapshot.projectId, ownerScope),
+    JSON.stringify(snapshot),
+  );
+  const current = readProjectIndex(storage, ownerScope).index;
+  const projects = [
+    projectSummary(snapshot),
+    ...(current?.projects ?? []).filter(
+      (project) => project.projectId !== snapshot.projectId,
+    ),
+  ]
+    .sort((left, right) => Date.parse(right.savedAt) - Date.parse(left.savedAt))
+    .slice(0, MAX_INDEXED_PROJECTS);
+  storage.setItem(
+    projectIndexKey(ownerScope),
+    JSON.stringify({
+      schemaVersion: 1,
+      activeProjectId: snapshot.projectId,
+      projects,
+    }),
+  );
+}
+
+export function clearProject(
+  storage: StorageLike,
+  ownerScope = "guest",
+  projectId?: string,
+) {
+  const current = readProjectIndex(storage, ownerScope).index;
+  const targetId = projectId ?? current?.activeProjectId;
+  if (targetId) {
+    storage.removeItem(projectSnapshotKey(targetId, ownerScope));
+    const projects = (current?.projects ?? []).filter(
+      (project) => project.projectId !== targetId,
+    );
+    storage.setItem(
+      projectIndexKey(ownerScope),
+      JSON.stringify({
+        schemaVersion: 1,
+        activeProjectId: projects[0]?.projectId ?? null,
+        projects,
+      }),
+    );
+  } else {
+    storage.removeItem(projectIndexKey(ownerScope));
+  }
+
   storage.removeItem(projectStorageKey(ownerScope));
   if (ownerScope === "guest") {
     storage.removeItem(LEGACY_PROJECT_STORAGE_KEY);

@@ -14,7 +14,8 @@ process.env.no_proxy = loopbackNoProxy;
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  fullyParallel: true,
+  // 这些流程共享本机 API 限流桶，串行执行才能模拟单个用户的真实节奏。
+  fullyParallel: false,
   retries: process.env.CI ? 2 : 0,
   reporter: "html",
   use: {
